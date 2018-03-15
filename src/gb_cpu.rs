@@ -1,6 +1,6 @@
 use std::rc::Rc;
 use gb_mem::MemoryController;
-use gb_opcodes as OpCodes;
+use gb_opcodes::OpCodes;
 
 const ZERO_FLAG: u8 = 1 << 7;
 const SUBT_FLAG: u8 = 1 << 6;
@@ -27,6 +27,7 @@ pub struct GbCpu {
     sp: u16,
     pc: u16,
 
+    ime: bool, // interrupt master enabled
     halt: bool,
     stop: bool,
 
@@ -44,19 +45,26 @@ impl GbCpu {
             f: 0u8,
             h: 0u8,
             l: 0u8,
-            sp: 0u16,
-            pc: 0u16,
+            sp: 0xFFFEu16,
+            pc: 0x0100u16,
+            ime: true,
             halt: false,
             stop: false,
             mc: Rc::new(MemoryController::new()),
         }
     }
 
-    pub fn get_ram(&self) -> Rc<MemoryController> {
+    pub fn get_memory_controller(&self) -> Rc<MemoryController> {
         self.mc.clone()
     }
 
-    fn get_carry(&self) -> u8 {
+    fn read_pc(&mut self) -> u8 {
+        let result = self.mc.read(self.pc);
+        self.pc += 1;
+        result
+    }
+
+    fn get_carry_state(&self) -> u8 {
         if (self.f & CARRY_FLAG) == CARRY_FLAG {
             1u8
         } else {
@@ -113,17 +121,17 @@ impl GbCpu {
     }
 
     fn add_no_zcheck(&mut self, a: u8, b: u8) -> u8 {
-        let r = a + b;
+        let r = a.overflowing_add(b);
         let hr = (a & 0x0F) + (b & 0x0F);
 
         self.set_flag_conditional(HALF_CARRY_FLAG, hr > 0x0F);
-        self.set_flag_conditional(CARRY_FLAG, r < a); // it wrapped around
+        self.set_flag_conditional(CARRY_FLAG, r.1); // it wrapped around
         self.reset_flag(SUBT_FLAG);
-        r
+        r.0
     }
 
     fn add_with_carry(&mut self, a: u8, b: u8) -> u8 {
-        let carry = self.get_carry();
+        let carry = self.get_carry_state();
         let t = a + carry;
         self.add(t, b)
     }
@@ -135,17 +143,17 @@ impl GbCpu {
     }
 
     fn subtract_no_zcheck(&mut self, a: u8, b: u8) -> u8 {
-        let r = a - b;
+        let r = a.overflowing_sub(b);
         let hr = (a & 0x0F) - (b & 0x0F);
 
         self.set_flag_conditional(HALF_CARRY_FLAG, hr > 0x0F);
-        self.set_flag_conditional(CARRY_FLAG, r > a); // it wrapped around
+        self.set_flag_conditional(CARRY_FLAG, r.1); // it wrapped around
         self.set_flag(SUBT_FLAG);
-        r
+        r.0
     }
 
     fn subtract_with_carry(&mut self, a: u8, b: u8) -> u8 {
-        let carry = self.get_carry();
+        let carry = self.get_carry_state();
         let n = b + carry;
         self.subtract(a, n)
     }
@@ -167,6 +175,20 @@ impl GbCpu {
     }
 
     // increment/decrement
+    fn increment(&mut self, byte: &mut u8) {
+        self.set_flag_conditional(HALF_CARRY_FLAG, (*byte & 0x0F) == 0x0F);
+        self.reset_flag(SUBT_FLAG);
+        *byte += 1;
+        self.set_flag_conditional(ZERO_FLAG, *byte == 0);
+    }
+
+    fn decrement(&mut self, byte: &mut u8) {
+        self.set_flag(SUBT_FLAG);
+        self.set_flag_conditional(HALF_CARRY_FLAG, (*byte & 0x0F) == 0x00);
+        *byte -= 1;
+        self.set_flag_conditional(ZERO_FLAG, *byte == 0);
+    }
+
     fn increment_16(high: &mut u8, low: &mut u8) {
         // does not affect flags
         if *low == 0xFF {
@@ -181,5 +203,94 @@ impl GbCpu {
             *high -= 1;
         }
         *low -= 1;
+    }
+
+    // rotation
+
+    // rotate left through self, but still copies leftmost bit to carry
+    fn do_rlc(&mut self, value: u8) -> u8 {
+        let result = value.rotate_left(1);
+
+        self.set_flag_conditional(CARRY_FLAG, (value & 0b1000_0000) > 0);
+        self.set_flag_conditional(ZERO_FLAG, result == 0);
+        self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG);
+
+        result
+    }
+
+    // rotate left through carry (and carry into rightmost bit)
+    fn do_rl(&mut self, value: u8) -> u8 {
+        let carry = self.get_carry_state();
+        let result = (value << 1) | carry;
+
+        self.set_flag_conditional(CARRY_FLAG, (value & 0b1000_0000) > 0);
+        self.set_flag_conditional(ZERO_FLAG, result == 0);
+        self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG);
+
+        result
+    }
+
+    // rotate right through self, but copy rightmost bit to carry
+    fn do_rrc(&mut self, value: u8) -> u8 {
+        let result = value.rotate_right(1);
+
+        self.set_flag_conditional(CARRY_FLAG, (value & 0b1) > 0);
+        self.set_flag_conditional(ZERO_FLAG, result == 0);
+        self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG);
+
+        result
+    }
+
+    // rotate right through the carry
+    fn do_rr(&mut self, value: u8) -> u8 {
+        let carry = self.get_carry_state();
+        let result = (value >> 1) | (carry << 7);
+
+        self.set_flag_conditional(CARRY_FLAG, (value & 0b1) == 0b1);
+        self.set_flag_conditional(ZERO_FLAG, result == 0);
+        self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG);
+
+        result
+    }
+
+    // shift operations
+    fn do_sla(&mut self, value: u8) -> u8 {
+        let result = value << 1;
+
+        self.set_flag_conditional(CARRY_FLAG, (value & 0b1000_0000) > 0);
+        self.set_flag_conditional(ZERO_FLAG, result == 0);
+        self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG);
+
+        result
+    }
+
+    fn do_sra(&mut self, value: u8) -> u8 {
+        let msb = value & 0b1000_0000;
+        let result = value >> 1 | msb;
+
+        self.set_flag_conditional(CARRY_FLAG, (value & 0b1) > 0);
+        self.set_flag_conditional(ZERO_FLAG, result == 0);
+        self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG);
+
+        result
+    }
+
+    fn do_srl(&mut self, value: u8) -> u8 {
+        let result = value >> 1;
+
+        self.set_flag_conditional(CARRY_FLAG, (value & 0b1) > 0);
+        self.set_flag_conditional(ZERO_FLAG, result == 0);
+        self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG);
+
+        result
+    }
+
+    fn do_swap(&mut self, value: u8) -> u8 {
+        let result = (value & 0x0F) << 4 | (value & 0xF0) >> 4;
+
+        self.set_flag_conditional(ZERO_FLAG, result == 0);
+        self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG | CARRY_FLAG);
+
+        result
     }
 }
