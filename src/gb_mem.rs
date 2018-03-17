@@ -17,8 +17,8 @@ impl MemoryController {
         }
     }
 
-    pub fn read(&self, addr: u16) -> u8 {
-        self.ram[addr as usize]
+    pub fn read(&self, addr: usize) -> u8 {
+        self.ram[addr]
     }
 
     pub fn write(&mut self, addr: u16, val: u8) {

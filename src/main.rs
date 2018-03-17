@@ -6,5 +6,8 @@ use gb_cpu::GbCpu;
 
 fn main() {
     let cpu = GbCpu::new();
-    println!("Hello, world!");
+    println!(
+        "Hello, world! {}",
+        cpu.get_memory_controller().read(0x0100) as char
+    );
 }

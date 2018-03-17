@@ -13,6 +13,37 @@ const TIMER_OVERFLOW_IF: u8 = 1 << 2;
 const SERIAL_IO_COMPLETE_IF: u8 = 1 << 3;
 const P10_P13_TERM_NEG_EDGE_IF: u8 = 1 << 4;
 
+mod details {
+    const PC_MAX: usize = 0xFFFF;
+
+    #[derive(Debug)]
+    pub struct ProgramCounter {
+        val: usize,
+    }
+
+    impl ProgramCounter {
+        pub fn new(init: usize) -> Self {
+            ProgramCounter { val: init }
+        }
+
+        pub fn get(&self) -> usize {
+            self.val
+        }
+
+        pub fn set(&mut self, val: usize) {
+            self.val = val & PC_MAX;
+        }
+
+        pub fn inc(&mut self, amt: usize) {
+            self.val = self.val.wrapping_add(amt) & PC_MAX;
+        }
+
+        pub fn dec(&mut self, val: usize) {
+            self.val = self.val.wrapping_sub(val) & PC_MAX;
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct GbCpu {
     a: u8,
@@ -25,7 +56,7 @@ pub struct GbCpu {
     l: u8,
 
     sp: u16,
-    pc: u16,
+    pc: details::ProgramCounter,
 
     ime: bool, // interrupt master enabled
     halt: bool,
@@ -46,7 +77,7 @@ impl GbCpu {
             h: 0u8,
             l: 0u8,
             sp: 0xFFFEu16,
-            pc: 0x0100u16,
+            pc: details::ProgramCounter::new(0x0100usize),
             ime: true,
             halt: false,
             stop: false,
@@ -58,9 +89,10 @@ impl GbCpu {
         self.mc.clone()
     }
 
-    fn read_pc(&mut self) -> u8 {
-        let result = self.mc.read(self.pc);
-        self.pc += 1;
+    fn read_op(&mut self) -> u8 {
+        // TODO: cache the operation in the CPU to determine what happens next
+        let result = self.mc.read(self.pc.get());
+        self.pc.inc(1);
         result
     }
 
@@ -91,10 +123,11 @@ impl GbCpu {
 
     fn make_ffn_address(&mut self) -> u16 {
         let mc = &self.mc;
-        let high = self.pc;
-        let low = self.pc + 1;
-        self.pc += 2;
-        (mc.read(high) as u16) | (mc.read(low) as u16) << 8
+        let pc = self.pc.get();
+        let high_addr = pc;
+        let low_addr = pc + 1;
+        self.pc.inc(2);
+        (mc.read(high_addr) as u16) | (mc.read(low_addr) as u16) << 8
     }
 
     // Setting the flag helpers
@@ -292,5 +325,26 @@ impl GbCpu {
         self.reset_flag(SUBT_FLAG | HALF_CARRY_FLAG | CARRY_FLAG);
 
         result
+    }
+
+    // program flow
+    fn do_jump_conditional(&mut self, test: bool) {
+        let pc = self.pc.get();
+        let low = self.mc.read(pc) as u16;
+        let high = self.mc.read(pc + 1) as u16;
+        self.pc.inc(2);
+        if test {
+            let dest = high << 8 | low;
+            self.pc.set(dest as usize);
+        }
+    }
+
+    fn do_jump_relative_conditional(&mut self, test: bool) {
+        let offset = self.mc.read(self.pc.get());
+        self.pc.inc(1);
+
+        if test {
+            self.pc.inc(offset as i8 as usize);
+        }
     }
 }
