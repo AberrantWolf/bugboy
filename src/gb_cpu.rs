@@ -1,5 +1,6 @@
 use std::rc::Rc;
-use gb_mem::MemoryController;
+use std::cell::RefCell;
+use gb_mem::{MemoryController, RamAddress};
 use gb_opcodes::OpCodes;
 
 const ZERO_FLAG: u8 = 1 << 7;
@@ -13,37 +14,6 @@ const TIMER_OVERFLOW_IF: u8 = 1 << 2;
 const SERIAL_IO_COMPLETE_IF: u8 = 1 << 3;
 const P10_P13_TERM_NEG_EDGE_IF: u8 = 1 << 4;
 
-mod details {
-    const PC_MAX: usize = 0xFFFF;
-
-    #[derive(Debug)]
-    pub struct ProgramCounter {
-        val: usize,
-    }
-
-    impl ProgramCounter {
-        pub fn new(init: usize) -> Self {
-            ProgramCounter { val: init }
-        }
-
-        pub fn get(&self) -> usize {
-            self.val
-        }
-
-        pub fn set(&mut self, val: usize) {
-            self.val = val & PC_MAX;
-        }
-
-        pub fn inc(&mut self, amt: usize) {
-            self.val = self.val.wrapping_add(amt) & PC_MAX;
-        }
-
-        pub fn dec(&mut self, val: usize) {
-            self.val = self.val.wrapping_sub(val) & PC_MAX;
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct GbCpu {
     a: u8,
@@ -55,14 +25,14 @@ pub struct GbCpu {
     h: u8,
     l: u8,
 
-    sp: u16,
-    pc: details::ProgramCounter,
+    sp: RamAddress,
+    pc: RamAddress,
 
     ime: bool, // interrupt master enabled
     halt: bool,
     stop: bool,
 
-    mc: Rc<MemoryController>,
+    mc: Rc<RefCell<MemoryController>>,
 }
 
 impl GbCpu {
@@ -76,23 +46,22 @@ impl GbCpu {
             f: 0u8,
             h: 0u8,
             l: 0u8,
-            sp: 0xFFFEu16,
-            pc: details::ProgramCounter::new(0x0100usize),
+            sp: RamAddress::new(0xFFFEu16),
+            pc: RamAddress::new(0x0100u16),
             ime: true,
             halt: false,
             stop: false,
-            mc: Rc::new(MemoryController::new()),
+            mc: Rc::new(RefCell::new(MemoryController::new())),
         }
     }
 
-    pub fn get_memory_controller(&self) -> Rc<MemoryController> {
+    pub fn get_memory_controller(&self) -> Rc<RefCell<MemoryController>> {
         self.mc.clone()
     }
 
     fn read_op(&mut self) -> u8 {
         // TODO: cache the operation in the CPU to determine what happens next
-        let result = self.mc.read(self.pc.get());
-        self.pc.inc(1);
+        let result = self.mc.borrow().read(self.pc.post_inc(1));
         result
     }
 
@@ -122,12 +91,10 @@ impl GbCpu {
     }
 
     fn make_ffn_address(&mut self) -> u16 {
-        let mc = &self.mc;
-        let pc = self.pc.get();
-        let high_addr = pc;
-        let low_addr = pc + 1;
-        self.pc.inc(2);
-        (mc.read(high_addr) as u16) | (mc.read(low_addr) as u16) << 8
+        let mc = &self.mc.borrow();
+        let low = mc.read(self.pc.post_inc(1));
+        let high = mc.read(self.pc.post_inc(1));
+        (low as u16) | (high as u16) << 8
     }
 
     // Setting the flag helpers
@@ -329,22 +296,32 @@ impl GbCpu {
 
     // program flow
     fn do_jump_conditional(&mut self, test: bool) {
-        let pc = self.pc.get();
-        let low = self.mc.read(pc) as u16;
-        let high = self.mc.read(pc + 1) as u16;
-        self.pc.inc(2);
+        let mc = self.mc.borrow();
+        let low = mc.read(self.pc.post_inc(1)) as u16;
+        let high = mc.read(self.pc.post_inc(1)) as u16;
         if test {
             let dest = high << 8 | low;
-            self.pc.set(dest as usize);
+            self.pc.set(dest);
         }
     }
 
     fn do_jump_relative_conditional(&mut self, test: bool) {
-        let offset = self.mc.read(self.pc.get());
-        self.pc.inc(1);
+        let offset = self.mc.borrow().read(self.pc.post_inc(1));
 
         if test {
-            self.pc.inc(offset as i8 as usize);
+            self.pc.inc(offset as i8 as u16);
         }
+    }
+
+    fn push_address_parts(&mut self, high: u8, low: u8) {
+        let mut mc = self.mc.borrow_mut();
+        mc.write(self.sp.post_dec(1), low);
+        mc.write(self.sp.post_dec(1), high);
+    }
+
+    fn push_address_u16(&mut self, addr: u16) {
+        let high = (addr & 0xFF00 >> 8) as u8;
+        let low = (addr & 0x00FF) as u8;
+        self.push_address_parts(high, low);
     }
 }
