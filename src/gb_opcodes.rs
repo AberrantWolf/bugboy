@@ -1,4 +1,5 @@
 #[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
 pub enum OpCodes {
     LD_A_A = 0x7F,
     LD_A_B = 0x78,
@@ -49,36 +50,36 @@ pub enum OpCodes {
     LD_L_E = 0x6B,
     LD_L_H = 0x6C,
     LD_L_L = 0x6D,
-    LD_A_N = 0x3E,
-    LD_B_N = 0x06,
-    LD_C_N = 0x0E,
-    LD_D_N = 0x16,
-    LD_E_N = 0x1E,
-    LD_H_N = 0x26,
-    LD_L_N = 0x2E,
-    LD_A_MHL = 0x7E,
-    LD_B_MHL = 0x46,
-    LD_C_MHL = 0x4E,
-    LD_D_MHL = 0x56,
-    LD_E_MHL = 0x5E,
-    LD_H_MHL = 0x66,
-    LD_L_MHL = 0x6E,
-    LD_MHL_A = 0x77,
-    LD_MHL_B = 0x70,
-    LD_MHL_C = 0x71,
-    LD_MHL_D = 0x72,
-    LD_MHL_E = 0x73,
-    LD_MHL_H = 0x74,
-    LD_MHL_L = 0x75,
-    LD_MHL_N = 0x36,
-    LD_A_MBC = 0x0A,
-    LD_A_MDE = 0x1A,
-    LD_A_MC = 0xF2,
+    LD_A_n = 0x3E,
+    LD_B_n = 0x06,
+    LD_C_n = 0x0E,
+    LD_D_n = 0x16,
+    LD_E_n = 0x1E,
+    LD_H_n = 0x26,
+    LD_L_n = 0x2E,
+    LD_A_mHL = 0x7E,
+    LD_B_mHL = 0x46,
+    LD_C_mHL = 0x4E,
+    LD_D_mHL = 0x56,
+    LD_E_mHL = 0x5E,
+    LD_H_mHL = 0x66,
+    LD_L_mHL = 0x6E,
+    LD_mHL_A = 0x77,
+    LD_mHL_B = 0x70,
+    LD_mHL_C = 0x71,
+    LD_mHL_D = 0x72,
+    LD_mHL_E = 0x73,
+    LD_mHL_H = 0x74,
+    LD_mHL_L = 0x75,
+    LD_mHL_N = 0x36,
+    LD_A_mBC = 0x0A,
+    LD_A_mDE = 0x1A,
+    LD_A_mC = 0xF2,
     LD_MC_A = 0xE2,
-    LD_A_MN = 0xF0,
-    LD_MN_A = 0xE0,
-    LD_A_MNN = 0xFA,
-    LD_MNN_A = 0xEA,
+    LD_A_mn = 0xF0,
+    LD_mn_A = 0xE0,
+    LD_A_mnn = 0xFA,
+    LD_mnn_A = 0xEA,
     LD_A_HLI = 0x2A,
     LD_A_HLD = 0x3A,
     LD_MBC_A = 0x02,
@@ -99,7 +100,7 @@ pub enum OpCodes {
     POP_HL = 0xE1,
     POP_AF = 0xF1,
     LDHL_SP_E = 0xF8,
-    LD_MNN_SP = 0x08,
+    LD_mnn_SP = 0x08,
     ADD_A_A = 0x87,
     ADD_A_B = 0x80,
     ADD_A_C = 0x81,
@@ -107,8 +108,8 @@ pub enum OpCodes {
     ADD_A_E = 0x83,
     ADD_A_H = 0x84,
     ADD_A_L = 0x85,
-    ADD_A_N = 0xC6,
-    ADD_A_MHL = 0x86,
+    ADD_A_n = 0xC6,
+    ADD_A_mHL = 0x86,
     ADC_A_A = 0x8F,
     ADC_A_B = 0x88,
     ADC_A_C = 0x89,
@@ -116,8 +117,8 @@ pub enum OpCodes {
     ADC_A_E = 0x8B,
     ADC_A_H = 0x8C,
     ADC_A_L = 0x8D,
-    ADC_A_N = 0xCE,
-    ADC_A_MHL = 0x8E,
+    ADC_A_n = 0xCE,
+    ADC_A_mHL = 0x8E,
     SUB_A = 0x97,
     SUB_B = 0x90,
     SUB_C = 0x91,
@@ -125,8 +126,8 @@ pub enum OpCodes {
     SUB_E = 0x93,
     SUB_H = 0x94,
     SUB_L = 0x95,
-    SUB_N = 0xD6,
-    SUB_MHL = 0x96,
+    SUB_n = 0xD6,
+    SUB_mHL = 0x96,
     SBC_A_A = 0x9F,
     SBC_A_B = 0x98,
     SBC_A_C = 0x99,
@@ -134,8 +135,8 @@ pub enum OpCodes {
     SBC_A_E = 0x9B,
     SBC_A_H = 0x9C,
     SBC_A_L = 0x9D,
-    SBC_A_N = 0xDE,
-    SBC_A_MHL = 0x9E,
+    SBC_A_n = 0xDE,
+    SBC_A_mHL = 0x9E,
     AND_A = 0xA7,
     AND_B = 0xA0,
     AND_C = 0xA1,
@@ -144,7 +145,7 @@ pub enum OpCodes {
     AND_H = 0xA4,
     AND_L = 0xA5,
     AND_N = 0xE6,
-    AND_MHL = 0xA6,
+    AND_mHL = 0xA6,
     OR_A = 0xB7,
     OR_B = 0xB0,
     OR_C = 0xB1,
@@ -152,8 +153,8 @@ pub enum OpCodes {
     OR_E = 0xB3,
     OR_H = 0xB4,
     OR_L = 0xB5,
-    OR_N = 0xF6,
-    OR_MHL = 0xB6,
+    OR_n = 0xF6,
+    OR_mHL = 0xB6,
     XOR_A = 0xAF,
     XOR_B = 0xA8,
     XOR_C = 0xA9,
@@ -162,7 +163,7 @@ pub enum OpCodes {
     XOR_H = 0xAC,
     XOR_L = 0xAD,
     XOR_N = 0xEE,
-    XOR_MHL = 0xAE,
+    XOR_mHL = 0xAE,
     CP_A = 0xBF,
     CP_B = 0xB8,
     CP_C = 0xB9,
@@ -170,8 +171,8 @@ pub enum OpCodes {
     CP_E = 0xBB,
     CP_H = 0xBC,
     CP_L = 0xBD,
-    CP_N = 0xFE,
-    CP_MHL = 0xBE,
+    CP_n = 0xFE,
+    CP_mHL = 0xBE,
     INC_A = 0x3C,
     INC_B = 0x04,
     INC_C = 0x0C,
@@ -179,7 +180,7 @@ pub enum OpCodes {
     INC_E = 0x1C,
     INC_H = 0x24,
     INC_L = 0x2C,
-    INC_MHL = 0x34,
+    INC_mHL = 0x34,
     DEC_A = 0x3D,
     DEC_B = 0x05,
     DEC_C = 0x0D,
@@ -187,12 +188,12 @@ pub enum OpCodes {
     DEC_E = 0x1D,
     DEC_H = 0x25,
     DEC_L = 0x2D,
-    DEC_MHL = 0x35,
+    DEC_mHL = 0x35,
     ADD_HL_BC = 0x09,
     ADD_HL_DE = 0x19,
     ADD_HL_HL = 0x29,
     ADD_HL_SP = 0x39,
-    ADD_SP_E = 0xE8,
+    ADD_SP_e = 0xE8,
     INC_BC = 0x03,
     INC_DE = 0x13,
     INC_HL = 0x23,
@@ -206,22 +207,22 @@ pub enum OpCodes {
     RRCA = 0x0F,
     RRA = 0x1F,
     MULTI_BYTE_OP = 0xCB,
-    JP_NN = 0xC3,
-    JP_NZ_NN = 0xC2,
-    JP_Z_NN = 0xCA,
-    JP_NC_NN = 0xD2,
-    JP_C_NN = 0xDA,
-    JR_E = 0x18,
-    JR_NZ_E = 0x20,
-    JR_Z_E = 0x28,
-    JR_NC_E = 0x30,
-    JR_C_E = 0x38,
-    JP_MHL = 0xE9,
-    CALL_NN = 0xCD,
-    CALL_NZ_NN = 0xC4,
-    CALL_Z_NN = 0xCC,
-    CALL_NC_NN = 0xD4,
-    CALL_C_NN = 0xDC,
+    JP_nn = 0xC3,
+    JP_NZ_nn = 0xC2,
+    JP_Z_nn = 0xCA,
+    JP_NC_nn = 0xD2,
+    JP_C_nn = 0xDA,
+    JR_e = 0x18,
+    JR_NZ_e = 0x20,
+    JR_Z_e = 0x28,
+    JR_NC_e = 0x30,
+    JR_C_e = 0x38,
+    JP_mHL = 0xE9,
+    CALL_nn = 0xCD,
+    CALL_NZ_nn = 0xC4,
+    CALL_Z_nn = 0xCC,
+    CALL_NC_nn = 0xD4,
+    CALL_C_nn = 0xDC,
     RET = 0xC9,
     RETI = 0xD9,
     RET_NZ = 0xC0,
@@ -245,14 +246,90 @@ pub enum OpCodes {
     DI = 0xFB,
 }
 
-// Multibyte secondary opcodes
-pub const RLC_M: u8 = 0x00;
-pub const RL_M: u8 = 0x02;
-pub const RRC_M: u8 = 0x01;
-pub const RR_M: u8 = 0x03;
-pub const SLA_M: u8 = 0x04;
-pub const SRA_M: u8 = 0x05;
-pub const SRL_M: u8 = 0x07;
-pub const SWAP_M: u8 = 0x06;
-pub const SET_B_R: u8 = 0xCB;
-pub const RES_B_R: u8 = 0xCB;
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum SecondOpType {
+    // occupying 11_000_000
+    ROTATE_SHIFT = 0b00,
+    BIT_CHECK = 0b01,
+    RESET = 0b10,
+    SET = 0b11,
+}
+
+impl SecondOpType {
+    pub fn from_u8(val: u8) -> Self {
+        let bits = (val & 0b11) >> 6;
+        match bits {
+            0b00 => SecondOpType::ROTATE_SHIFT,
+            0b01 => SecondOpType::BIT_CHECK,
+            0b10 => SecondOpType::RESET,
+            0b11 => SecondOpType::SET,
+            _ => panic!("SecondOpType::from_u8 should never get here"),
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum SecondOpAction {
+    // occupying 00_111_000
+    RLC = 0b000,
+    RL = 0b010,
+    RRC = 0b001,
+    RR = 0b011,
+    SLA = 0b100,
+    SRA = 0b101,
+    SRL = 0b111,
+    SWAP = 0b110,
+}
+
+impl SecondOpAction {
+    pub fn from_u8(val: u8) -> SecondOpAction {
+        let bits = (val & 0b00_111_000) >> 3;
+        match bits {
+            0b000 => SecondOpAction::RLC,
+            0b010 => SecondOpAction::RL,
+            0b001 => SecondOpAction::RRC,
+            0b011 => SecondOpAction::RR,
+            0b100 => SecondOpAction::SLA,
+            0b101 => SecondOpAction::SRA,
+            0b111 => SecondOpAction::SRL,
+            0b110 => SecondOpAction::SWAP,
+            _ => panic!("SecondOpAction::from_u8 should never get here"),
+        }
+    }
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug, Clone, Copy)]
+#[repr(u8)]
+pub enum SecondOpRegister {
+    // occupying 00_000_111
+    A = 0b111,
+    B = 0b000,
+    C = 0b001,
+    D = 0b010,
+    E = 0b011,
+    H = 0b100,
+    L = 0b101,
+    mHL = 0b110,
+}
+
+impl SecondOpRegister {
+    pub fn from_u8(val: u8) -> Self {
+        let bits = val & 0b111;
+        match bits {
+            0b111 => SecondOpRegister::A,
+            0b000 => SecondOpRegister::B,
+            0b001 => SecondOpRegister::C,
+            0b010 => SecondOpRegister::D,
+            0b011 => SecondOpRegister::E,
+            0b100 => SecondOpRegister::H,
+            0b101 => SecondOpRegister::L,
+            0b110 => SecondOpRegister::mHL,
+            _ => panic!("SecondOpRegister::from_u8 should never get here"),
+        }
+    }
+}

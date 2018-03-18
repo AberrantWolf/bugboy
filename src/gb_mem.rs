@@ -20,8 +20,9 @@ impl RamAddress {
         self.val = val & ADDR_MAX;
     }
 
-    pub fn inc(&mut self, amt: u16) {
+    pub fn inc(&mut self, amt: u16) -> Self {
         self.val = self.val.wrapping_add(amt) & ADDR_MAX;
+        *self
     }
 
     pub fn post_inc(&mut self, amt: u16) -> Self {
@@ -30,8 +31,9 @@ impl RamAddress {
         copy
     }
 
-    pub fn dec(&mut self, val: u16) {
+    pub fn dec(&mut self, val: u16) -> Self {
         self.val = self.val.wrapping_sub(val) & ADDR_MAX;
+        *self
     }
 
     pub fn post_dec(&mut self, val: u16) -> Self {
