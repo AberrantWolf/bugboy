@@ -1,8 +1,10 @@
 use std::rc::Rc;
 use std::cell::RefCell;
 
+use num::FromPrimitive;
+
 use gb_hw_bus::HardwareBus;
-use gb_mem::{MemoryController, RamAddress};
+use gb_mem::{MemoryController, RamAddress, decrement_16, increment_16, IE_ADDR};
 use gb_opcodes::{OpCodes, SecondOpAction, SecondOpRegister, SecondOpType};
 
 const ZERO_FLAG: u8 = 1 << 7;
@@ -64,24 +66,24 @@ impl DmgCpu {
         }
     }
 
-    pub fn tick_op(&mut self) {}
+    fn sync_hardware_bus(&mut self) {
+        self.bus.borrow_mut().sync(self.clock);
+    }
 
     pub fn get_memory_controller(&self) -> Rc<RefCell<MemoryController>> {
         self.mc.clone()
     }
 
-    fn read_op(&mut self) -> u8 {
+    fn read_next_byte(&mut self) -> u8 {
         // TODO: cache the operation in the CPU to determine what happens next
         let result = self.mc.borrow().read(self.pc.post_inc(1));
+        self.clock += 4;
+        self.sync_hardware_bus();
         result
     }
 
-    fn get_carry_state(&self) -> u8 {
-        if (self.f & CARRY_FLAG) == CARRY_FLAG {
-            1u8
-        } else {
-            0u8
-        }
+    fn get_carry_value(&self) -> u8 {
+        (self.f & CARRY_FLAG) >> 5
     }
 
     // Creating addresses by combining registers (&c)
@@ -97,15 +99,32 @@ impl DmgCpu {
         RamAddress::new((self.h as u16) << 8 | self.l as u16)
     }
 
-    fn make_ffc_address(&self, n: u8) -> RamAddress {
-        RamAddress::new(0xFF00 | n as u16)
+    fn make_ffc_address(&self) -> RamAddress {
+        RamAddress::new(0xFF00 | self.c as u16)
     }
 
     fn make_ffn_address(&mut self) -> RamAddress {
-        let mc = &self.mc.borrow();
-        let low = mc.read(self.pc.post_inc(1));
-        let high = mc.read(self.pc.post_inc(1));
-        RamAddress::new((low as u16) | (high as u16) << 8)
+        let n = self.read_next_byte() as u16;
+        RamAddress::new(0xFF00u16 | n)
+    }
+
+    fn read_address_pair(&mut self) -> (u8, u8) {
+        let low = self.read_next_byte();
+        let high = self.read_next_byte();
+        (high, low)
+    }
+
+    fn write_address_pair(&mut self, high: &mut u8, low: &mut u8) {
+        let pair = self.read_address_pair();
+        *high = pair.0;
+        *low = pair.1;
+    }
+
+    fn make_nn_address(&mut self) -> RamAddress {
+        let pair = self.read_address_pair();
+        let low = pair.0 as u16;
+        let high = pair.1 as u16;
+        RamAddress::new((high << 8) | low)
     }
 
     // Setting the flag helpers
@@ -142,8 +161,10 @@ impl DmgCpu {
     }
 
     fn add_with_carry(&mut self, a: u8, b: u8) -> u8 {
-        let carry = self.get_carry_state();
-        let t = a + carry;
+        let carry = self.get_carry_value();
+        // this increments the dest first, might set flags but they
+        // would be overwritten? is this correct behaviour?
+        let t = self.add(a, carry);
         self.add(t, b)
     }
 
@@ -164,7 +185,7 @@ impl DmgCpu {
     }
 
     fn subtract_with_carry(&mut self, a: u8, b: u8) -> u8 {
-        let carry = self.get_carry_state();
+        let carry = self.get_carry_value();
         let n = b + carry;
         self.subtract(a, n)
     }
@@ -200,22 +221,6 @@ impl DmgCpu {
         self.set_flag_conditional(ZERO_FLAG, *byte == 0);
     }
 
-    fn increment_16(high: &mut u8, low: &mut u8) {
-        // does not affect flags
-        if *low == 0xFF {
-            *high += 1;
-        }
-        *low += 1;
-    }
-
-    fn decrement_16(high: &mut u8, low: &mut u8) {
-        // does not affect flags
-        if *low == 0x00 {
-            *high -= 1;
-        }
-        *low -= 1;
-    }
-
     // rotation
 
     // rotate left through self, but still copies leftmost bit to carry
@@ -231,7 +236,7 @@ impl DmgCpu {
 
     // rotate left through carry (and carry into rightmost bit)
     fn do_rl(&mut self, value: u8) -> u8 {
-        let carry = self.get_carry_state();
+        let carry = self.get_carry_value();
         let result = (value << 1) | carry;
 
         self.set_flag_conditional(CARRY_FLAG, (value & 0b1000_0000) > 0);
@@ -254,7 +259,7 @@ impl DmgCpu {
 
     // rotate right through the carry
     fn do_rr(&mut self, value: u8) -> u8 {
-        let carry = self.get_carry_state();
+        let carry = self.get_carry_value();
         let result = (value >> 1) | (carry << 7);
 
         self.set_flag_conditional(CARRY_FLAG, (value & 0b1) == 0b1);
@@ -322,6 +327,7 @@ impl DmgCpu {
 
     fn do_jump_relative_conditional(&mut self, test: bool) {
         let offset = self.mc.borrow().read(self.pc.post_inc(1));
+        self.sync_hardware_bus();
 
         if test {
             self.pc.inc(offset as i8 as u16);
@@ -329,9 +335,10 @@ impl DmgCpu {
     }
 
     fn push_address_parts(&mut self, high: u8, low: u8) {
-        let mut mc = self.mc.borrow_mut();
-        mc.write(self.sp.dec(1), low);
-        mc.write(self.sp.dec(1), high);
+        self.mc.borrow_mut().write(self.sp.dec(1), low);
+        self.sync_hardware_bus();
+        self.mc.borrow_mut().write(self.sp.dec(1), high);
+        self.sync_hardware_bus();
     }
 
     fn push_address_u16(&mut self, addr: u16) {
@@ -340,10 +347,15 @@ impl DmgCpu {
         self.push_address_parts(high, low);
     }
 
+    fn push_address(&mut self, addr: RamAddress) {
+        self.push_address_u16(addr.get());
+    }
+
     fn pop_address_parts(&mut self) -> (u8, u8) {
-        let mc = self.mc.borrow();
-        let high = mc.read(self.sp.post_inc(1));
-        let low = mc.read(self.sp.post_inc(1));
+        let high = self.mc.borrow().read(self.sp.post_inc(1));
+        self.sync_hardware_bus();
+        let low = self.mc.borrow().read(self.sp.post_inc(1));
+        self.sync_hardware_bus();
         (high, low)
     }
 
@@ -400,7 +412,11 @@ impl DmgCpu {
                     SecondOpRegister::E => self.e,
                     SecondOpRegister::H => self.h,
                     SecondOpRegister::L => self.l,
-                    SecondOpRegister::mHL => self.mc.borrow().read(self.make_hl_address()),
+                    SecondOpRegister::mHL => {
+                        let val = self.mc.borrow().read(self.make_hl_address());
+                        self.sync_hardware_bus();
+                        val
+                    }
                 };
                 self.set_flag_conditional(ZERO_FLAG, (reg_value & bit_mask) == 0);
             }
@@ -413,10 +429,11 @@ impl DmgCpu {
                 SecondOpRegister::H => self.h |= bit_mask,
                 SecondOpRegister::L => self.l |= bit_mask,
                 SecondOpRegister::mHL => {
-                    let mut mc = self.mc.borrow_mut();
                     let hl = self.make_hl_address();
-                    let val = mc.read(hl);
-                    mc.write(hl, val | bit_mask);
+                    let val = self.mc.borrow_mut().read(hl);
+                    self.sync_hardware_bus();
+                    self.mc.borrow_mut().write(hl, val | bit_mask);
+                    self.sync_hardware_bus();
                 }
             },
             SecondOpType::RESET => match register {
@@ -446,10 +463,11 @@ impl DmgCpu {
                 SecondOpRegister::H => self.h &= !bit_mask,
                 SecondOpRegister::L => self.l &= !bit_mask,
                 SecondOpRegister::mHL => {
-                    let mut mc = self.mc.borrow_mut();
                     let hl = self.make_hl_address();
-                    let val = mc.read(hl);
-                    mc.write(hl, val & !bit_mask);
+                    let val = self.mc.borrow_mut().read(hl);
+                    self.sync_hardware_bus();
+                    self.mc.borrow_mut().write(hl, val & !bit_mask);
+                    self.sync_hardware_bus();
                 }
             },
         }
@@ -494,6 +512,1080 @@ impl DmgCpu {
             return;
         }
 
-        self.bus.borrow_mut().sync(self.clock);
+        let op_val = self.read_next_byte();
+        self.do_op(op_val);
+    }
+
+    pub fn do_op(&mut self, op_val: u8) {
+        let op = match OpCodes::from_u8(op_val) {
+            Some(op) => op,
+            None => {
+                println!("Unrecognized opcode value: {}!!!", op_val);
+                return;
+            }
+        };
+
+        match op {
+            OpCodes::LD_A_A => {
+                // do nothing since it's copying to itself
+            }
+            OpCodes::LD_A_B => {
+                self.a = self.b;
+            }
+            OpCodes::LD_A_C => {
+                self.a = self.c;
+            }
+            OpCodes::LD_A_D => {
+                self.a = self.d;
+            }
+            OpCodes::LD_A_E => {
+                self.a = self.e;
+            }
+            OpCodes::LD_A_H => {
+                self.a = self.h;
+            }
+            OpCodes::LD_A_L => {
+                self.a = self.l;
+            }
+            OpCodes::LD_B_A => {
+                self.b = self.a;
+            }
+            OpCodes::LD_B_B => {
+                // pass
+            }
+            OpCodes::LD_B_C => {
+                self.b = self.c;
+            }
+            OpCodes::LD_B_D => {
+                self.b = self.d;
+            }
+            OpCodes::LD_B_E => {
+                self.b = self.e;
+            }
+            OpCodes::LD_B_H => {
+                self.b = self.h;
+            }
+            OpCodes::LD_B_L => {
+                self.b = self.l;
+            }
+            OpCodes::LD_C_A => {
+                self.c = self.a;
+            }
+            OpCodes::LD_C_B => {
+                self.c = self.b;
+            }
+            OpCodes::LD_C_C => {
+                // pass
+            }
+            OpCodes::LD_C_D => {
+                self.c = self.d;
+            }
+            OpCodes::LD_C_E => {
+                self.c = self.e;
+            }
+            OpCodes::LD_C_H => {
+                self.c = self.h;
+            }
+            OpCodes::LD_C_L => {
+                self.c = self.l;
+            }
+            OpCodes::LD_D_A => {
+                self.d = self.a;
+            }
+            OpCodes::LD_D_B => {
+                self.d = self.b;
+            }
+            OpCodes::LD_D_C => {
+                self.d = self.c;
+            }
+            OpCodes::LD_D_D => {
+                // pass
+            }
+            OpCodes::LD_D_E => {
+                self.d = self.e;
+            }
+            OpCodes::LD_D_H => {
+                self.d = self.h;
+            }
+            OpCodes::LD_D_L => {
+                self.d = self.l;
+            }
+            OpCodes::LD_E_A => {
+                self.e = self.a;
+            }
+            OpCodes::LD_E_B => {
+                self.e = self.b;
+            }
+            OpCodes::LD_E_C => {
+                self.e = self.c;
+            }
+            OpCodes::LD_E_D => {
+                self.e = self.d;
+            }
+            OpCodes::LD_E_E => {
+                // pass
+            }
+            OpCodes::LD_E_H => {
+                self.e = self.h;
+            }
+            OpCodes::LD_E_L => {
+                self.e = self.l;
+            }
+            OpCodes::LD_H_A => {
+                self.h = self.a;
+            }
+            OpCodes::LD_H_B => {
+                self.h = self.b;
+            }
+            OpCodes::LD_H_C => {
+                self.h = self.c;
+            }
+            OpCodes::LD_H_D => {
+                self.h = self.d;
+            }
+            OpCodes::LD_H_E => {
+                self.h = self.e;
+            }
+            OpCodes::LD_H_H => {
+                // pass
+            }
+            OpCodes::LD_H_L => {
+                self.h = self.l;
+            }
+            OpCodes::LD_L_A => {
+                self.l = self.a;
+            }
+            OpCodes::LD_L_B => {
+                self.l = self.b;
+            }
+            OpCodes::LD_L_C => {
+                self.l = self.c;
+            }
+            OpCodes::LD_L_D => {
+                self.l = self.d;
+            }
+            OpCodes::LD_L_E => {
+                self.l = self.e;
+            }
+            OpCodes::LD_L_H => {
+                self.l = self.h;
+            }
+            OpCodes::LD_L_L => {
+                // pass
+            }
+            OpCodes::LD_A_N => {
+                self.a = self.read_next_byte();
+            }
+            OpCodes::LD_B_N => {
+                self.b = self.read_next_byte();
+            }
+            OpCodes::LD_C_N => {
+                self.c = self.read_next_byte();
+            }
+            OpCodes::LD_D_N => {
+                self.d = self.read_next_byte();
+            }
+            OpCodes::LD_E_N => {
+                self.e = self.read_next_byte();
+            }
+            OpCodes::LD_H_N => {
+                self.h = self.read_next_byte();
+            }
+            OpCodes::LD_L_N => {
+                self.l = self.read_next_byte();
+            }
+            OpCodes::LD_A_mHL => {
+                let addr = self.make_hl_address();
+                self.a = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_B_mHL => {
+                let addr = self.make_hl_address();
+                self.b = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_C_mHL => {
+                let addr = self.make_hl_address();
+                self.c = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_D_mHL => {
+                let addr = self.make_hl_address();
+                self.d = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_E_mHL => {
+                let addr = self.make_hl_address();
+                self.e = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_H_mHL => {
+                let addr = self.make_hl_address();
+                self.h = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_L_mHL => {
+                let addr = self.make_hl_address();
+                self.l = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_mHL_A => {
+                let addr = self.make_hl_address();
+                let val = self.a;
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::LD_mHL_B => {
+                let addr = self.make_hl_address();
+                let val = self.b;
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::LD_mHL_C => {
+                let addr = self.make_hl_address();
+                let val = self.c;
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::LD_mHL_D => {
+                let addr = self.make_hl_address();
+                let val = self.d;
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::LD_mHL_E => {
+                let addr = self.make_hl_address();
+                let val = self.e;
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::LD_mHL_H => {
+                let addr = self.make_hl_address();
+                let val = self.h;
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::LD_mHL_L => {
+                let addr = self.make_hl_address();
+                let val = self.l;
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::LD_mHL_N => {
+                let addr = self.make_hl_address();
+                let val = self.read_next_byte();
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::LD_A_mBC => {
+                let addr = self.make_bc_address();
+                self.a = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_A_mDE => {
+                let addr = self.make_de_address();
+                self.a = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_A_mC => {
+                let addr = self.make_ffc_address();
+                self.a = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_mC_A => {
+                let addr = self.make_ffc_address();
+                let a = self.a;
+                self.mc.borrow_mut().write(addr, a);
+            }
+            OpCodes::LD_A_mN => {
+                let addr = self.make_ffn_address();
+                self.a = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_mN_A => {
+                let addr = self.make_ffn_address();
+                let a = self.a;
+                self.mc.borrow_mut().write(addr, a);
+            }
+            OpCodes::LD_A_mNN => {
+                let addr = self.make_nn_address();
+                self.a = self.mc.borrow().read(addr);
+            }
+            OpCodes::LD_mNN_A => {
+                let addr = self.make_nn_address();
+                let a = self.a;
+                self.mc.borrow_mut().write(addr, a);
+            }
+            OpCodes::LD_A_HLI => {
+                let addr = self.make_hl_address();
+                self.a = self.mc.borrow().read(addr);
+                increment_16(&mut self.h, &mut self.l);
+            }
+            OpCodes::LD_A_HLD => {
+                let addr = self.make_hl_address();
+                self.a = self.mc.borrow().read(addr);
+                decrement_16(&mut self.h, &mut self.l);
+            }
+            OpCodes::LD_mBC_A => {
+                let addr = self.make_bc_address();
+                let a = self.a;
+                self.mc.borrow_mut().write(addr, a);
+            }
+            OpCodes::LD_mDE_A => {
+                let addr = self.make_de_address();
+                let a = self.a;
+                self.mc.borrow_mut().write(addr, a);
+            }
+            OpCodes::LD_HLI_A => {
+                let addr = self.make_hl_address();
+                let a = self.a;
+                self.mc.borrow_mut().write(addr, a);
+                increment_16(&mut self.h, &mut self.l);
+            }
+            OpCodes::LD_HLD_A => {
+                let addr = self.make_hl_address();
+                let a = self.a;
+                self.mc.borrow_mut().write(addr, a);
+                decrement_16(&mut self.h, &mut self.l);
+            }
+            OpCodes::LD_BC_NN => {
+                let pair = self.read_address_pair();
+                self.b = pair.0;
+                self.c = pair.1;
+            }
+            OpCodes::LD_DE_NN => {
+                let pair = self.read_address_pair();
+                self.d = pair.0;
+                self.e = pair.1;
+            }
+            OpCodes::LD_HL_NN => {
+                let pair = self.read_address_pair();
+                self.h = pair.0;
+                self.l = pair.1;
+            }
+            OpCodes::LD_SP_NN => {
+                self.sp = self.make_nn_address();
+            }
+            OpCodes::LD_SP_HL => {
+                self.sp = self.make_hl_address();
+            }
+            OpCodes::PUSH_BC => {
+                let b = self.b;
+                let c = self.c;
+                self.push_address_parts(b, c);
+            }
+            OpCodes::PUSH_DE => {
+                let d = self.d;
+                let e = self.e;
+                self.push_address_parts(d, e);
+            }
+            OpCodes::PUSH_HL => {
+                let h = self.h;
+                let l = self.l;
+                self.push_address_parts(h, l);
+            }
+            OpCodes::PUSH_AF => {
+                let a = self.a;
+                let f = self.f;
+                self.push_address_parts(a, f);
+            }
+            OpCodes::POP_BC => {
+                let parts = self.pop_address_parts();
+                self.b = parts.0;
+                self.c = parts.1;
+            }
+            OpCodes::POP_DE => {
+                let parts = self.pop_address_parts();
+                self.b = parts.0;
+                self.c = parts.1;
+            }
+            OpCodes::POP_HL => {
+                let parts = self.pop_address_parts();
+                self.b = parts.0;
+                self.c = parts.1;
+            }
+            OpCodes::POP_AF => {
+                let parts = self.pop_address_parts();
+                self.b = parts.0;
+                self.c = parts.1;
+            }
+            OpCodes::LDHL_SP_e => {
+                let b = self.read_next_byte();
+                let sp = self.sp.get();
+                let temp = self.add_to_u16(b, sp);
+                self.h = ((temp & 0xFF00) >> 8) as u8;
+                self.l = (temp & 0x00FF) as u8;
+            }
+            OpCodes::LD_mNN_SP => {
+                let mut addr = self.make_nn_address();
+                let sp = self.sp.get();
+                self.mc
+                    .borrow_mut()
+                    .write(addr.post_inc(1), (sp & 0x00ff) as u8);
+                self.mc.borrow_mut().write(addr, ((sp & 0xff00) >> 8) as u8);
+            }
+            OpCodes::ADD_A_A => {
+                let val = self.a;
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADD_A_B => {
+                let val = self.b;
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADD_A_C => {
+                let val = self.c;
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADD_A_D => {
+                let val = self.d;
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADD_A_E => {
+                let val = self.e;
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADD_A_H => {
+                let val = self.h;
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADD_A_L => {
+                let val = self.l;
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADD_A_N => {
+                let val = self.read_next_byte();
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADD_A_mHL => {
+                let addr = self.make_hl_address();
+                let val = self.mc.borrow().read(addr);
+                let a = self.a;
+                self.a = self.add(a, val);
+            }
+            OpCodes::ADC_A_A => {
+                let val = self.a;
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::ADC_A_B => {
+                let val = self.b;
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::ADC_A_C => {
+                let val = self.c;
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::ADC_A_D => {
+                let val = self.d;
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::ADC_A_E => {
+                let val = self.e;
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::ADC_A_H => {
+                let val = self.h;
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::ADC_A_L => {
+                let val = self.l;
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::ADC_A_N => {
+                let val = self.read_next_byte();
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::ADC_A_mHL => {
+                let addr = self.make_hl_address();
+                let val = self.mc.borrow().read(addr);
+                let a = self.a;
+                self.a = self.add_with_carry(a, val);
+            }
+            OpCodes::SUB_A => {
+                let val = self.a;
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SUB_B => {
+                let val = self.b;
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SUB_C => {
+                let val = self.c;
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SUB_D => {
+                let val = self.d;
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SUB_E => {
+                let val = self.e;
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SUB_H => {
+                let val = self.h;
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SUB_L => {
+                let val = self.l;
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SUB_N => {
+                let val = self.read_next_byte();
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SUB_mHL => {
+                let addr = self.make_hl_address();
+                let val = self.mc.borrow().read(addr);
+                let a = self.a;
+                self.a = self.subtract(a, val);
+            }
+            OpCodes::SBC_A_A => {
+                let a = self.a;
+                let val = self.a;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::SBC_A_B => {
+                let a = self.a;
+                let val = self.b;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::SBC_A_C => {
+                let a = self.a;
+                let val = self.c;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::SBC_A_D => {
+                let a = self.a;
+                let val = self.d;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::SBC_A_E => {
+                let a = self.a;
+                let val = self.e;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::SBC_A_H => {
+                let a = self.a;
+                let val = self.h;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::SBC_A_L => {
+                let a = self.a;
+                let val = self.l;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::SBC_A_N => {
+                let val = self.read_next_byte();
+                let a = self.a;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::SBC_A_mHL => {
+                let addr = self.make_hl_address();
+                let val = self.mc.borrow().read(addr);
+                let a = self.a;
+                self.a = self.subtract_with_carry(a, val);
+            }
+            OpCodes::AND_A => {
+                self.a = self.a & self.a;
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::AND_B => {
+                self.a = self.a & self.b;
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::AND_C => {
+                self.a = self.a & self.c;
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::AND_D => {
+                self.a = self.a & self.d;
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::AND_E => {
+                self.a = self.a & self.e;
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::AND_H => {
+                self.a = self.a & self.h;
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::AND_L => {
+                self.a = self.a & self.l;
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::AND_N => {
+                self.a = self.a & self.read_next_byte();
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::AND_mHL => {
+                let addr = self.make_hl_address();
+                let val = self.mc.borrow().read(addr);
+                self.a = self.a & val;
+                let a = self.a;
+                self.set_logic_flags(a, true);
+            }
+            OpCodes::OR_A => {
+                self.a = self.a | self.a;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::OR_B => {
+                self.a = self.a | self.b;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::OR_C => {
+                self.a = self.a | self.c;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::OR_D => {
+                self.a = self.a | self.d;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::OR_E => {
+                self.a = self.a | self.e;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::OR_H => {
+                self.a = self.a | self.h;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::OR_L => {
+                self.a = self.a | self.l;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::OR_N => {
+                let val = self.read_next_byte();
+                self.a = self.a | val;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::OR_mHL => {
+                let addr = self.make_hl_address();
+                let val = self.mc.borrow().read(addr);
+                self.a = self.a | val;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_A => {
+                self.a ^= self.a;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_B => {
+                self.a ^= self.b;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_C => {
+                self.a ^= self.c;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_D => {
+                self.a ^= self.d;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_E => {
+                self.a ^= self.e;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_H => {
+                self.a ^= self.h;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_L => {
+                self.a ^= self.l;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_N => {
+                let val = self.read_next_byte();
+                self.a ^= val;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::XOR_mHL => {
+                let addr = self.make_hl_address();
+                let val = self.mc.borrow().read(addr);
+                self.a ^= val;
+                let a = self.a;
+                self.set_logic_flags(a, false);
+            }
+            OpCodes::CP_A => {
+                let val = self.a;
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::CP_B => {
+                let val = self.b;
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::CP_C => {
+                let val = self.c;
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::CP_D => {
+                let val = self.d;
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::CP_E => {
+                let val = self.e;
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::CP_H => {
+                let val = self.h;
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::CP_L => {
+                let val = self.l;
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::CP_N => {
+                let val = self.read_next_byte();
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::CP_mHL => {
+                let addr = self.make_hl_address();
+                let val = self.mc.borrow().read(addr);
+                let a = self.a;
+                self.subtract_with_carry(a, val);
+            }
+            OpCodes::INC_A => {
+                let mut val = self.a;
+                self.increment(&mut val);
+                self.a = val;
+            }
+            OpCodes::INC_B => {
+                let mut val = self.b;
+                self.increment(&mut val);
+                self.b = val;
+            }
+            OpCodes::INC_C => {
+                let mut val = self.c;
+                self.increment(&mut val);
+                self.c = val;
+            }
+            OpCodes::INC_D => {
+                let mut val = self.d;
+                self.increment(&mut val);
+                self.d = val;
+            }
+            OpCodes::INC_E => {
+                let mut val = self.e;
+                self.increment(&mut val);
+                self.e = val;
+            }
+            OpCodes::INC_H => {
+                let mut val = self.h;
+                self.increment(&mut val);
+                self.h = val;
+            }
+            OpCodes::INC_L => {
+                let mut val = self.l;
+                self.increment(&mut val);
+                self.l = val;
+            }
+            OpCodes::INC_mHL => {
+                let addr = self.make_hl_address();
+                let mut val = self.mc.borrow().read(addr);
+                self.increment(&mut val);
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::DEC_A => {
+                let mut val = self.a;
+                self.decrement(&mut val);
+                self.a = val;
+            }
+            OpCodes::DEC_B => {
+                let mut val = self.b;
+                self.decrement(&mut val);
+                self.b = val;
+            }
+            OpCodes::DEC_C => {
+                let mut val = self.c;
+                self.decrement(&mut val);
+                self.c = val;
+            }
+            OpCodes::DEC_D => {
+                let mut val = self.d;
+                self.decrement(&mut val);
+                self.d = val;
+            }
+            OpCodes::DEC_E => {
+                let mut val = self.e;
+                self.decrement(&mut val);
+                self.e = val;
+            }
+            OpCodes::DEC_H => {
+                let mut val = self.h;
+                self.decrement(&mut val);
+                self.h = val;
+            }
+            OpCodes::DEC_L => {
+                let mut val = self.l;
+                self.decrement(&mut val);
+                self.l = val;
+            }
+            OpCodes::DEC_mHL => {
+                let addr = self.make_hl_address();
+                let mut val = self.mc.borrow().read(addr);
+                self.decrement(&mut val);
+                self.mc.borrow_mut().write(addr, val);
+            }
+            OpCodes::ADD_HL_BC => {
+                let h = self.h;
+                let l = self.l;
+                let b = self.b;
+                let c = self.c;
+                self.l = self.add(l, c);
+                self.h = self.add_with_carry(h, b);
+            }
+            OpCodes::ADD_HL_DE => {
+                let h = self.h;
+                let l = self.l;
+                let d = self.d;
+                let e = self.e;
+                self.l = self.add(l, e);
+                self.h = self.add_with_carry(h, d);
+            }
+            OpCodes::ADD_HL_HL => {
+                let h = self.h;
+                let l = self.l;
+                self.l = self.add(l, l);
+                self.h = self.add_with_carry(h, h);
+            }
+            OpCodes::ADD_HL_SP => {
+                let sp_val = self.sp.get();
+                let h = self.h;
+                let l = self.l;
+                self.l = self.add(l, sp_val as u8);
+                let carry = self.get_carry_value();
+                self.h = self.add(h, ((sp_val & 0xFF00) >> 8) as u8 + carry);
+            }
+            OpCodes::ADD_SP_e => {
+                let val = self.read_next_byte() as u16;
+                self.sp.inc(val);
+            }
+            OpCodes::INC_BC => {
+                increment_16(&mut self.b, &mut self.c);
+            }
+            OpCodes::INC_DE => {
+                increment_16(&mut self.d, &mut self.e);
+            }
+            OpCodes::INC_HL => {
+                increment_16(&mut self.h, &mut self.l);
+            }
+            OpCodes::INC_SP => {
+                self.sp.inc(1);
+            }
+            OpCodes::DEC_BC => {
+                decrement_16(&mut self.b, &mut self.c);
+            }
+            OpCodes::DEC_DE => {
+                decrement_16(&mut self.d, &mut self.e);
+            }
+            OpCodes::DEC_HL => {
+                decrement_16(&mut self.h, &mut self.l);
+            }
+            OpCodes::DEC_SP => {
+                self.sp.dec(1);
+            }
+            OpCodes::RLCA => {
+                let a = self.a;
+                self.a = self.do_rlc(a);
+            }
+            OpCodes::RLA => {
+                let a = self.a;
+                self.a = self.do_rl(a);
+            }
+            OpCodes::RRCA => {
+                let a = self.a;
+                self.a = self.do_rrc(a);
+            }
+            OpCodes::RRA => {
+                let a = self.a;
+                self.a = self.do_rr(a);
+            }
+            OpCodes::MULTI_BYTE_OP => {
+                // this code accounts for many variants based on the second byte read
+                let next_op = self.read_next_byte();
+                self.decode_and_execute_cb_op(next_op);
+            }
+            OpCodes::JP_NN => {
+                self.do_jump_conditional(true);
+            }
+            OpCodes::JP_NZ_NN => {
+                let f = self.f;
+                self.do_jump_conditional((f & ZERO_FLAG) == 0);
+            }
+            OpCodes::JP_Z_NN => {
+                let f = self.f;
+                self.do_jump_conditional((f & ZERO_FLAG) == ZERO_FLAG);
+            }
+            OpCodes::JP_NC_NN => {
+                let f = self.f;
+                self.do_jump_conditional((f & CARRY_FLAG) == 0);
+            }
+            OpCodes::JP_C_NN => {
+                let f = self.f;
+                self.do_jump_conditional((f & CARRY_FLAG) == CARRY_FLAG);
+            }
+            OpCodes::JR_e => {
+                self.do_jump_relative_conditional(true);
+            }
+            OpCodes::JR_NZ_e => {
+                let f = self.f;
+                self.do_jump_relative_conditional((f & ZERO_FLAG) == 0);
+            }
+            OpCodes::JR_Z_e => {
+                let f = self.f;
+                self.do_jump_relative_conditional((f & ZERO_FLAG) == ZERO_FLAG);
+            }
+            OpCodes::JR_NC_e => {
+                let f = self.f;
+                self.do_jump_relative_conditional((f & CARRY_FLAG) == 0);
+            }
+            OpCodes::JR_C_e => {
+                let f = self.f;
+                self.do_jump_relative_conditional((f & CARRY_FLAG) == CARRY_FLAG);
+            }
+            OpCodes::JP_mHL => {
+                // self.actually just loads self.hL into self.pc, not memory at self.hL... :(
+                self.pc = self.make_hl_address();
+            }
+            OpCodes::CALL_NN => {
+                self.do_call_conditional(true);
+            }
+            OpCodes::CALL_NZ_NN => {
+                let f = self.f;
+                self.do_call_conditional((f & ZERO_FLAG) == 0);
+            }
+            OpCodes::CALL_Z_NN => {
+                let f = self.f;
+                self.do_call_conditional((f & ZERO_FLAG) == ZERO_FLAG);
+            }
+            OpCodes::CALL_NC_NN => {
+                let f = self.f;
+                self.do_call_conditional((f & CARRY_FLAG) == 0);
+            }
+            OpCodes::CALL_C_NN => {
+                let f = self.f;
+                self.do_call_conditional((f & CARRY_FLAG) == CARRY_FLAG);
+            }
+            OpCodes::RET => {
+                self.do_return_conditional(true);
+            }
+            OpCodes::RETI => {
+                self.do_return_conditional(true);
+                self.ime = true;
+            }
+            OpCodes::RET_NZ => {
+                let f = self.f;
+                self.do_return_conditional((f & ZERO_FLAG) == 0);
+            }
+            OpCodes::RET_Z => {
+                let f = self.f;
+                self.do_return_conditional((f & ZERO_FLAG) == ZERO_FLAG);
+            }
+            OpCodes::RET_NC => {
+                let f = self.f;
+                self.do_return_conditional((f & CARRY_FLAG) == 0);
+            }
+            OpCodes::RET_C => {
+                let f = self.f;
+                self.do_return_conditional((f & CARRY_FLAG) == CARRY_FLAG);
+            }
+            OpCodes::RST_0 => {
+                let pc = self.pc;
+                self.push_address(pc);
+                self.pc = RamAddress::new(0x0000);
+            }
+            OpCodes::RST_1 => {
+                let pc = self.pc;
+                self.push_address(pc);
+                self.pc = RamAddress::new(0x0008);
+            }
+            OpCodes::RST_2 => {
+                let pc = self.pc;
+                self.push_address(pc);
+                self.pc = RamAddress::new(0x0010);
+            }
+            OpCodes::RST_3 => {
+                let pc = self.pc;
+                self.push_address(pc);
+                self.pc = RamAddress::new(0x0018);
+            }
+            OpCodes::RST_4 => {
+                let pc = self.pc;
+                self.push_address(pc);
+                self.pc = RamAddress::new(0x0020);
+            }
+            OpCodes::RST_5 => {
+                let pc = self.pc;
+                self.push_address(pc);
+                self.pc = RamAddress::new(0x0028);
+            }
+            OpCodes::RST_6 => {
+                let pc = self.pc;
+                self.push_address(pc);
+                self.pc = RamAddress::new(0x0030);
+            }
+            OpCodes::RST_7 => {
+                let pc = self.pc;
+                self.push_address(pc);
+                self.pc = RamAddress::new(0x0038);
+            }
+            OpCodes::DAA => {
+                self.do_daa();
+            }
+            OpCodes::CPL => {
+                self.a = !self.a;
+            }
+            OpCodes::NOP => {
+                // literally no operation done here
+            }
+            OpCodes::HALT => {
+                self.halt = true;
+            }
+            OpCodes::STOP => {
+                self.mc.borrow_mut().write(IE_ADDR, 0);
+                // TODO: set all inputs to self.lOW
+                self.stop = true;
+            }
+            OpCodes::EI => {
+                self.ime = true;
+            }
+            OpCodes::DI => {
+                self.ime = false;
+            }
+        }
     }
 }

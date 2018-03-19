@@ -1,3 +1,8 @@
+#![feature(custom_attribute)]
+#[macro_use]
+extern crate enum_primitive;
+extern crate num;
+
 mod gb_cpu;
 mod gb_mem;
 mod gb_opcodes;

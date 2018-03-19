@@ -4,3 +4,5 @@ version = "0.1.0"
 authors = ["Scott Harper <orcein@gmil.com>"]
 
 [dependencies]
+enum_primitive = "*"
+num = "0.1"

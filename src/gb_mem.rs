@@ -2,6 +2,28 @@ use std::fmt;
 
 const ADDR_MAX: u16 = 0xFFFF;
 
+pub const IE_ADDR: RamAddress = RamAddress { val: 0xFFFFu16 };
+pub const IF_ADDR: RamAddress = RamAddress { val: 0xFF0Fu16 };
+
+pub const SB_ADDR: RamAddress = RamAddress { val: 0xFF01u16 };
+pub const SC_ADDR: RamAddress = RamAddress { val: 0xFF02u16 };
+
+pub fn increment_16(high: &mut u8, low: &mut u8) {
+    // does not affect flags
+    if *low == 0xFF {
+        *high += 1;
+    }
+    *low += 1;
+}
+
+pub fn decrement_16(high: &mut u8, low: &mut u8) {
+    // does not affect flags
+    if *low == 0x00 {
+        *high -= 1;
+    }
+    *low -= 1;
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RamAddress {
     val: u16,
