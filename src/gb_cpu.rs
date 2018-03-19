@@ -1,6 +1,7 @@
 use std::rc::Rc;
 use std::cell::RefCell;
-use std::fmt;
+
+use gb_hw_bus::HardwareBus;
 use gb_mem::{MemoryController, RamAddress};
 use gb_opcodes::{OpCodes, SecondOpAction, SecondOpRegister, SecondOpType};
 
@@ -15,47 +16,8 @@ const TIMER_OVERFLOW_IF: u8 = 1 << 2;
 const SERIAL_IO_COMPLETE_IF: u8 = 1 << 3;
 const P10_P13_TERM_NEG_EDGE_IF: u8 = 1 << 4;
 
-type OpFn = Box<Fn(&mut Registers) -> ()>;
-
-pub struct Operation {
-    opcode: OpCodes,
-    m_cycles: usize,
-    op: OpFn,
-    done: bool,
-}
-
-impl fmt::Debug for Operation {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "OpCode: {:?} M Cycles: {:?}", self.opcode, self.m_cycles)
-    }
-}
-
-impl Operation {
-    fn new_empty() -> Self {
-        Operation {
-            opcode: OpCodes::NOP,
-            m_cycles: 1,
-            op: Box::new(|cpu| {}),
-            done: true,
-        }
-    }
-
-    fn new(opcode: OpCodes, m_cycles: usize, op: OpFn) -> Self {
-        Operation {
-            opcode: opcode,
-            m_cycles: m_cycles,
-            op: op,
-            done: false,
-        }
-    }
-
-    fn tick(&mut self, cpu: &mut DmgCpu) {
-        self.done = true;
-    }
-}
-
 #[derive(Debug)]
-struct Registers {
+pub struct DmgCpu {
     a: u8,
     b: u8,
     c: u8,
@@ -66,41 +28,39 @@ struct Registers {
     l: u8,
     sp: RamAddress,
     pc: RamAddress,
-}
-
-#[derive(Debug)]
-pub struct DmgCpu {
-    reg: Registers,
 
     ime: bool, // interrupt master enabled
     halt: bool,
     stop: bool,
 
-    mc: Rc<RefCell<MemoryController>>,
+    clock: u64,
 
-    op: Operation,
+    mc: Rc<RefCell<MemoryController>>,
+    bus: Rc<RefCell<HardwareBus>>,
 }
 
 impl DmgCpu {
-    pub fn new() -> Self {
+    pub fn new(bus: Rc<RefCell<HardwareBus>>, mc: Rc<RefCell<MemoryController>>) -> Self {
         DmgCpu {
-            reg: Registers {
-                a: 0u8,
-                b: 0u8,
-                c: 0u8,
-                d: 0u8,
-                e: 0u8,
-                f: 0u8,
-                h: 0u8,
-                l: 0u8,
-                sp: RamAddress::new(0xFFFEu16),
-                pc: RamAddress::new(0x0100u16),
-            },
+            a: 0u8,
+            b: 0u8,
+            c: 0u8,
+            d: 0u8,
+            e: 0u8,
+            f: 0u8,
+            h: 0u8,
+            l: 0u8,
+            sp: RamAddress::new(0xFFFEu16),
+            pc: RamAddress::new(0x0100u16),
+
             ime: true,
             halt: false,
             stop: false,
-            mc: Rc::new(RefCell::new(MemoryController::new())),
-            op: Operation::new_empty(),
+
+            clock: 0u64,
+
+            mc: mc,
+            bus: bus,
         }
     }
 
@@ -112,12 +72,12 @@ impl DmgCpu {
 
     fn read_op(&mut self) -> u8 {
         // TODO: cache the operation in the CPU to determine what happens next
-        let result = self.mc.borrow().read(self.reg.pc.post_inc(1));
+        let result = self.mc.borrow().read(self.pc.post_inc(1));
         result
     }
 
     fn get_carry_state(&self) -> u8 {
-        if (self.reg.f & CARRY_FLAG) == CARRY_FLAG {
+        if (self.f & CARRY_FLAG) == CARRY_FLAG {
             1u8
         } else {
             0u8
@@ -126,15 +86,15 @@ impl DmgCpu {
 
     // Creating addresses by combining registers (&c)
     fn make_bc_address(&self) -> RamAddress {
-        RamAddress::new((self.reg.b as u16) << 8 | self.reg.c as u16)
+        RamAddress::new((self.b as u16) << 8 | self.c as u16)
     }
 
     fn make_de_address(&self) -> RamAddress {
-        RamAddress::new((self.reg.d as u16) << 8 | self.reg.e as u16)
+        RamAddress::new((self.d as u16) << 8 | self.e as u16)
     }
 
     fn make_hl_address(&self) -> RamAddress {
-        RamAddress::new((self.reg.h as u16) << 8 | self.reg.l as u16)
+        RamAddress::new((self.h as u16) << 8 | self.l as u16)
     }
 
     fn make_ffc_address(&self, n: u8) -> RamAddress {
@@ -143,18 +103,18 @@ impl DmgCpu {
 
     fn make_ffn_address(&mut self) -> RamAddress {
         let mc = &self.mc.borrow();
-        let low = mc.read(self.reg.pc.post_inc(1));
-        let high = mc.read(self.reg.pc.post_inc(1));
+        let low = mc.read(self.pc.post_inc(1));
+        let high = mc.read(self.pc.post_inc(1));
         RamAddress::new((low as u16) | (high as u16) << 8)
     }
 
     // Setting the flag helpers
     fn set_flag(&mut self, mask: u8) {
-        self.reg.f |= mask;
+        self.f |= mask;
     }
 
     fn reset_flag(&mut self, mask: u8) {
-        self.reg.f &= !mask;
+        self.f &= !mask;
     }
 
     fn set_flag_conditional(&mut self, mask: u8, test: bool) {
@@ -210,11 +170,11 @@ impl DmgCpu {
     }
 
     fn set_logic_flags(&mut self, result: u8, set_half_carry: bool) {
-        self.reg.f &= !(SUBT_FLAG | CARRY_FLAG);
+        self.f &= !(SUBT_FLAG | CARRY_FLAG);
         if set_half_carry {
-            self.reg.f |= HALF_CARRY_FLAG;
+            self.f |= HALF_CARRY_FLAG;
         } else {
-            self.reg.f &= !HALF_CARRY_FLAG;
+            self.f &= !HALF_CARRY_FLAG;
         }
 
         self.set_flag_conditional(ZERO_FLAG, result == 0);
@@ -348,30 +308,30 @@ impl DmgCpu {
     // program flow
     fn read_pc_as_address(&mut self) -> u16 {
         let mc = self.mc.borrow();
-        let low = mc.read(self.reg.pc.post_inc(1)) as u16;
-        let high = mc.read(self.reg.pc.post_inc(1)) as u16;
+        let low = mc.read(self.pc.post_inc(1)) as u16;
+        let high = mc.read(self.pc.post_inc(1)) as u16;
         high << 8 | low
     }
 
     fn do_jump_conditional(&mut self, test: bool) {
         let dest = self.read_pc_as_address();
         if test {
-            self.reg.pc.set(dest);
+            self.pc.set(dest);
         }
     }
 
     fn do_jump_relative_conditional(&mut self, test: bool) {
-        let offset = self.mc.borrow().read(self.reg.pc.post_inc(1));
+        let offset = self.mc.borrow().read(self.pc.post_inc(1));
 
         if test {
-            self.reg.pc.inc(offset as i8 as u16);
+            self.pc.inc(offset as i8 as u16);
         }
     }
 
     fn push_address_parts(&mut self, high: u8, low: u8) {
         let mut mc = self.mc.borrow_mut();
-        mc.write(self.reg.sp.dec(1), low);
-        mc.write(self.reg.sp.dec(1), high);
+        mc.write(self.sp.dec(1), low);
+        mc.write(self.sp.dec(1), high);
     }
 
     fn push_address_u16(&mut self, addr: u16) {
@@ -382,8 +342,8 @@ impl DmgCpu {
 
     fn pop_address_parts(&mut self) -> (u8, u8) {
         let mc = self.mc.borrow();
-        let high = mc.read(self.reg.sp.post_inc(1));
-        let low = mc.read(self.reg.sp.post_inc(1));
+        let high = mc.read(self.sp.post_inc(1));
+        let low = mc.read(self.sp.post_inc(1));
         (high, low)
     }
 
@@ -396,16 +356,16 @@ impl DmgCpu {
         let dest = self.read_pc_as_address();
 
         if test {
-            let addr = self.reg.pc.get();
+            let addr = self.pc.get();
             self.push_address_u16(addr);
-            self.reg.pc.set(dest);
+            self.pc.set(dest);
         }
     }
 
     fn do_return_conditional(&mut self, test: bool) {
         if test {
             let addr = self.pop_address_u16();
-            self.reg.pc.set(addr);
+            self.pc.set(addr);
         }
     }
 
@@ -433,25 +393,25 @@ impl DmgCpu {
         match op_type {
             SecondOpType::BIT_CHECK => {
                 let reg_value = match register {
-                    SecondOpRegister::A => self.reg.a,
-                    SecondOpRegister::B => self.reg.b,
-                    SecondOpRegister::C => self.reg.c,
-                    SecondOpRegister::D => self.reg.d,
-                    SecondOpRegister::E => self.reg.e,
-                    SecondOpRegister::H => self.reg.h,
-                    SecondOpRegister::L => self.reg.l,
+                    SecondOpRegister::A => self.a,
+                    SecondOpRegister::B => self.b,
+                    SecondOpRegister::C => self.c,
+                    SecondOpRegister::D => self.d,
+                    SecondOpRegister::E => self.e,
+                    SecondOpRegister::H => self.h,
+                    SecondOpRegister::L => self.l,
                     SecondOpRegister::mHL => self.mc.borrow().read(self.make_hl_address()),
                 };
                 self.set_flag_conditional(ZERO_FLAG, (reg_value & bit_mask) == 0);
             }
             SecondOpType::SET => match register {
-                SecondOpRegister::A => self.reg.a |= bit_mask,
-                SecondOpRegister::B => self.reg.b |= bit_mask,
-                SecondOpRegister::C => self.reg.c |= bit_mask,
-                SecondOpRegister::D => self.reg.d |= bit_mask,
-                SecondOpRegister::E => self.reg.e |= bit_mask,
-                SecondOpRegister::H => self.reg.h |= bit_mask,
-                SecondOpRegister::L => self.reg.l |= bit_mask,
+                SecondOpRegister::A => self.a |= bit_mask,
+                SecondOpRegister::B => self.b |= bit_mask,
+                SecondOpRegister::C => self.c |= bit_mask,
+                SecondOpRegister::D => self.d |= bit_mask,
+                SecondOpRegister::E => self.e |= bit_mask,
+                SecondOpRegister::H => self.h |= bit_mask,
+                SecondOpRegister::L => self.l |= bit_mask,
                 SecondOpRegister::mHL => {
                     let mut mc = self.mc.borrow_mut();
                     let hl = self.make_hl_address();
@@ -460,13 +420,13 @@ impl DmgCpu {
                 }
             },
             SecondOpType::RESET => match register {
-                SecondOpRegister::A => self.reg.a &= !bit_mask,
-                SecondOpRegister::B => self.reg.b &= !bit_mask,
-                SecondOpRegister::C => self.reg.c &= !bit_mask,
-                SecondOpRegister::D => self.reg.d &= !bit_mask,
-                SecondOpRegister::E => self.reg.e &= !bit_mask,
-                SecondOpRegister::H => self.reg.h &= !bit_mask,
-                SecondOpRegister::L => self.reg.l &= !bit_mask,
+                SecondOpRegister::A => self.a &= !bit_mask,
+                SecondOpRegister::B => self.b &= !bit_mask,
+                SecondOpRegister::C => self.c &= !bit_mask,
+                SecondOpRegister::D => self.d &= !bit_mask,
+                SecondOpRegister::E => self.e &= !bit_mask,
+                SecondOpRegister::H => self.h &= !bit_mask,
+                SecondOpRegister::L => self.l &= !bit_mask,
                 SecondOpRegister::mHL => {
                     let mut mc = self.mc.borrow_mut();
                     let hl = self.make_hl_address();
@@ -476,15 +436,15 @@ impl DmgCpu {
             },
             SecondOpType::ROTATE_SHIFT => match register {
                 SecondOpRegister::A => {
-                    let a = self.reg.a;
-                    self.reg.a = self.hand_rotate_shift_op(a, action);
+                    let a = self.a;
+                    self.a = self.hand_rotate_shift_op(a, action);
                 }
-                SecondOpRegister::B => self.reg.b &= !bit_mask,
-                SecondOpRegister::C => self.reg.c &= !bit_mask,
-                SecondOpRegister::D => self.reg.d &= !bit_mask,
-                SecondOpRegister::E => self.reg.e &= !bit_mask,
-                SecondOpRegister::H => self.reg.h &= !bit_mask,
-                SecondOpRegister::L => self.reg.l &= !bit_mask,
+                SecondOpRegister::B => self.b &= !bit_mask,
+                SecondOpRegister::C => self.c &= !bit_mask,
+                SecondOpRegister::D => self.d &= !bit_mask,
+                SecondOpRegister::E => self.e &= !bit_mask,
+                SecondOpRegister::H => self.h &= !bit_mask,
+                SecondOpRegister::L => self.l &= !bit_mask,
                 SecondOpRegister::mHL => {
                     let mut mc = self.mc.borrow_mut();
                     let hl = self.make_hl_address();
@@ -496,7 +456,7 @@ impl DmgCpu {
     }
 
     fn is_flag_set(&self, flag: u8) -> bool {
-        (self.reg.f & flag) == flag
+        (self.f & flag) == flag
     }
 
     fn do_daa(&mut self) {
@@ -504,7 +464,7 @@ impl DmgCpu {
         let hc = self.is_flag_set(HALF_CARRY_FLAG);
         let c = self.is_flag_set(CARRY_FLAG);
 
-        let mut temp = self.reg.a as u16;
+        let mut temp = self.a as u16;
 
         if n {
             if hc {
@@ -523,26 +483,17 @@ impl DmgCpu {
         }
 
         let a = temp as u8;
-        self.reg.a = a;
+        self.a = a;
         self.set_flag_conditional(ZERO_FLAG, a == 0);
         self.set_flag_conditional(CARRY_FLAG, temp > 0xFF);
         self.reset_flag(HALF_CARRY_FLAG);
     }
 
-    fn tick(&mut self) {
+    pub fn tick(&mut self) {
         if self.stop {
             return;
         }
 
-        if self.op.done {
-            // read a new op
-            let f = move |regs: &mut Registers| {
-                println!("Line number: {}", regs.pc.get());
-            };
-            self.op = Operation::new(OpCodes::NOP, 1, Box::new(f));
-            return;
-        }
-
-        (self.op.op)(&mut self.reg);
+        self.bus.borrow_mut().sync(self.clock);
     }
 }
