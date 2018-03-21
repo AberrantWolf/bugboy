@@ -1,4 +1,5 @@
 #![feature(custom_attribute)]
+#![feature(slice_patterns)]
 #[macro_use]
 extern crate enum_primitive;
 extern crate num;
@@ -7,13 +8,18 @@ mod gb_cpu;
 mod gb_mem;
 mod gb_opcodes;
 mod gb_hw_bus;
+mod gb_rom;
 
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::env;
+use std::fs;
+use std::path::Path;
+use std::rc::Rc;
 
 use gb_cpu::DmgCpu;
-use gb_mem::{MemoryController, RamAddress};
 use gb_hw_bus::HardwareBus;
+use gb_mem::{MemoryController, RamAddress};
+use gb_rom::GbRom;
 
 struct DmgBoy {
     cpu: Rc<RefCell<DmgCpu>>,
@@ -41,6 +47,21 @@ impl DmgBoy {
 }
 
 fn main() {
+    let args: Vec<String> = env::args().collect();
+
+    let path = Path::new(&args[1]);
+
+    let mut absolute_path = match env::current_dir() {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Unable to get current environment path: {}", e);
+            panic!();
+        }
+    };
+    absolute_path.push(path);
+
+    let rom = GbRom::new(absolute_path);
+
     let mut bugboy = DmgBoy::new();
     {
         let mc = bugboy.mc.borrow();
@@ -48,5 +69,5 @@ fn main() {
         println!("Hello, world! {}", mc.read(addr) as char);
     }
 
-    bugboy.run();
+    //bugboy.run();
 }

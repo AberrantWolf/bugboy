@@ -1,5 +1,7 @@
 use std::fmt;
 
+use gb_rom::GbRom;
+
 const ADDR_MAX: u16 = 0xFFFF;
 
 pub const IE_ADDR: RamAddress = RamAddress { val: 0xFFFFu16 };
@@ -111,14 +113,42 @@ impl MemoryController {
     pub fn write(&mut self, addr: RamAddress, val: u8) {
         let idx = addr.get() as usize;
 
+        match idx {
+            0x0000...0x3FFF => {
+                println!("ERROR: trying to write to ROM bank 0: {}", idx);
+                // send this on to the ROM as it may cause a bank switch
+                return;
+            }
+            0x4000...0x7FFF => {
+                println!("ERROR: trying to write to switchable ROM bank: {}", idx);
+                // MAYBE send this to the ROM as well...?
+                return;
+            }
+            0x8000...0x9FFF => {
+                // Video RAM...
+            }
+            0xA000...0xBFFF => {
+                // Switchable RAM bank... (on cartridge, if available)
+            }
+            0xC000...0xDFFF => {
+                // Internal RAM
+                // 0xD000...0xDFFF is switchable on CGB
+                self.ram[idx + 0x2000] = val;
+            }
+            0xE000...0xFDFF => {
+                // mirror RAM -- probly shouldn't use...?
+                self.ram[idx - 0x2000] = val;
+            }
+            0xFE00...0xFE9F => {
+                //OAM -- Object attribute memory
+            }
+            0xFEA0...0xFEFF => {
+                // Unusable Memory
+                println!("ERROR: trying to write to unusable memory: {}", idx);
+                return;
+            }
+        };
+
         self.ram[idx] = val;
-
-        if idx < 0xDE00 && idx > 0xBFFF {
-            self.ram[idx + 0x2000] = val;
-        }
-
-        if idx < 0xFE00 && idx > 0xDFFF {
-            self.ram[idx - 0x2000] = val;
-        }
     }
 }
