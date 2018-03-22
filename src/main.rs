@@ -60,7 +60,13 @@ fn main() {
     };
     absolute_path.push(path);
 
-    let rom = GbRom::new(absolute_path);
+    let rom = match GbRom::new(absolute_path) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("ERROR loading ROM: {}", e);
+            return;
+        }
+    };
 
     let mut bugboy = DmgBoy::new();
     {

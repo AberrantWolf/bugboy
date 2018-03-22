@@ -147,6 +147,9 @@ impl MemoryController {
                 println!("ERROR: trying to write to unusable memory: {}", idx);
                 return;
             }
+            _ => {
+                println!("WARNING: Unsupported memory write to {}", idx);
+            }
         };
 
         self.ram[idx] = val;
