@@ -53,7 +53,7 @@ impl DmgCpu {
             h: 0u8,
             l: 0u8,
             sp: RamAddress::new(0xFFFEu16),
-            pc: RamAddress::new(0x0100u16),
+            pc: RamAddress::new(0x0000u16),
 
             ime: true,
             halt: false,
@@ -75,7 +75,6 @@ impl DmgCpu {
     }
 
     fn read_next_byte(&mut self) -> u8 {
-        // TODO: cache the operation in the CPU to determine what happens next
         let result = self.mc.borrow().read(self.pc.post_inc(1));
         self.clock += 4;
         self.sync_hardware_bus();
@@ -111,13 +110,13 @@ impl DmgCpu {
     fn read_address_pair(&mut self) -> (u8, u8) {
         let low = self.read_next_byte();
         let high = self.read_next_byte();
-        (high, low)
+        (low, high)
     }
 
     fn write_address_pair(&mut self, high: &mut u8, low: &mut u8) {
         let pair = self.read_address_pair();
-        *high = pair.0;
-        *low = pair.1;
+        *low = pair.0;
+        *high = pair.1;
     }
 
     fn make_nn_address(&mut self) -> RamAddress {
@@ -210,14 +209,14 @@ impl DmgCpu {
     fn increment(&mut self, byte: &mut u8) {
         self.set_flag_conditional(HALF_CARRY_FLAG, (*byte & 0x0F) == 0x0F);
         self.reset_flag(SUBT_FLAG);
-        *byte += 1;
+        *byte = (*byte).wrapping_add(1);
         self.set_flag_conditional(ZERO_FLAG, *byte == 0);
     }
 
     fn decrement(&mut self, byte: &mut u8) {
         self.set_flag(SUBT_FLAG);
         self.set_flag_conditional(HALF_CARRY_FLAG, (*byte & 0x0F) == 0x00);
-        *byte -= 1;
+        *byte = (*byte).wrapping_sub(1);
         self.set_flag_conditional(ZERO_FLAG, *byte == 0);
     }
 
@@ -507,6 +506,10 @@ impl DmgCpu {
         self.reset_flag(HALF_CARRY_FLAG);
     }
 
+    pub fn is_stopped(&self) -> bool {
+        self.stop
+    }
+
     pub fn tick(&mut self) {
         if self.stop {
             return;
@@ -524,6 +527,12 @@ impl DmgCpu {
                 return;
             }
         };
+
+        println!("Doing op: {:?} @ {:X}", op, self.pc.get());
+        println!(
+            "Reg A:{:X} B:{:X} C:{:X} D:{:X} E:{:X} F:{:X} H:{:X} L:{:X}",
+            self.a, self.b, self.c, self.d, self.e, self.f, self.h, self.l
+        );
 
         match op {
             OpCodes::LD_A_A => {

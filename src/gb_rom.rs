@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::fmt::*;
 use std::fs;
 use std::io::prelude::*;
 use std::path::PathBuf;
@@ -8,6 +7,8 @@ use std::vec::Vec;
 use std::result::Result;
 
 use num::FromPrimitive;
+
+use gb_mem::RamAddress;
 
 #[derive(Debug)]
 enum CgbFlag {
@@ -505,10 +506,6 @@ impl GbRom {
         Ok(rom)
     }
 
-    pub fn title(&self) -> &str {
-        self.title.as_str()
-    }
-
     pub fn print_info(&self) {
         let w = 26;
         println!("=== ROM Info ===============");
@@ -543,5 +540,13 @@ impl GbRom {
             "+ {:2$}: {:?}",
             "Encoded (whole) checksum", self.checksum, w
         );
+    }
+
+    pub fn copy_current_slice(&self, dest: &mut [u8]) {
+        dest.copy_from_slice(&self.data.borrow()[0x0000..0x8000]);
+    }
+
+    pub fn read_address(&self, addr: RamAddress) -> u8 {
+        self.data.borrow()[addr.get() as usize]
     }
 }

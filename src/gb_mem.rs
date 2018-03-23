@@ -12,18 +12,22 @@ pub const SC_ADDR: RamAddress = RamAddress { val: 0xFF02u16 };
 
 pub fn increment_16(high: &mut u8, low: &mut u8) {
     // does not affect flags
-    if *low == 0xFF {
-        *high += 1;
+    let over_low = (*low).overflowing_add(1);
+    *low = over_low.0;
+
+    if over_low.1 {
+        *high = (*high).wrapping_add(1);
     }
-    *low += 1;
 }
 
 pub fn decrement_16(high: &mut u8, low: &mut u8) {
     // does not affect flags
-    if *low == 0x00 {
-        *high -= 1;
+    let over_low = (*low).overflowing_sub(1);
+    *low = over_low.0;
+
+    if over_low.1 {
+        *high = (*high).wrapping_sub(1);
     }
-    *low -= 1;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -87,7 +91,25 @@ fn post_dec_test() {
     assert!(ra.get() == 9)
 }
 
+enum MemorySection {
+    RestartInterrupts = 0x0000,
+    Header = 0x0100,
+    RomBank0 = 0x0150,
+    RomBankN = 0x4000,
+    VRam = 0x8000,
+    ExternalRam = 0xA000,
+    WorkRam0 = 0xC000,
+    WorkRamN = 0xD000,
+    Echo = 0xE000,
+    SpriteAttribute = 0xFE00,
+    Unusable = 0xFEA0,
+    IORegisters = 0xFF00,
+    HighRam = 0xFF80,
+    IERegister = 0xFFFF,
+}
+
 pub struct MemoryController {
+    rom: GbRom,
     ram: [u8; 0x10000], //65536 bytes
 }
 
@@ -98,15 +120,24 @@ impl fmt::Debug for MemoryController {
 }
 
 impl MemoryController {
-    pub fn new() -> Self {
-        MemoryController {
+    pub fn new(rom: GbRom) -> Self {
+        let mut mc = MemoryController {
+            rom: rom,
             ram: [0u8; 0x10000],
+        };
+
+        {
+            let mut dest = &mut mc.ram[0x000..0x8000];
+            mc.rom.copy_current_slice(dest);
         }
+
+        mc
     }
 
     // Will panic if addr is outside of the size
     pub fn read(&self, addr: RamAddress) -> u8 {
         self.ram[addr.get() as usize]
+        //self.rom.read_address(addr)
     }
 
     // Will panic if addr is outside of the size
@@ -114,7 +145,7 @@ impl MemoryController {
         let idx = addr.get() as usize;
 
         match idx {
-            0x0000...0x3FFF => {
+            0x0000...0x00FF => {
                 println!("ERROR: trying to write to ROM bank 0: {}", idx);
                 // send this on to the ROM as it may cause a bank switch
                 return;
@@ -146,6 +177,15 @@ impl MemoryController {
                 // Unusable Memory
                 println!("ERROR: trying to write to unusable memory: {}", idx);
                 return;
+            }
+            0xFF00...0xFF7F => {
+                // I/O ports
+            }
+            0xFF80...0xFFFE => {
+                // High RAM
+            }
+            0xFFFF => {
+                // Interrupt enable register
             }
             _ => {
                 println!("WARNING: Unsupported memory write to {}", idx);

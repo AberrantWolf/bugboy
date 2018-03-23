@@ -12,7 +12,6 @@ mod gb_rom;
 
 use std::cell::RefCell;
 use std::env;
-use std::fs;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -28,9 +27,9 @@ struct DmgBoy {
 }
 
 impl DmgBoy {
-    fn new() -> Self {
+    fn new(rom: GbRom) -> Self {
         let bus = Rc::new(RefCell::new(HardwareBus::new()));
-        let mc = Rc::new(RefCell::new(MemoryController::new()));
+        let mc = Rc::new(RefCell::new(MemoryController::new(rom)));
         let cpu = Rc::new(RefCell::new(DmgCpu::new(bus.clone(), mc.clone())));
         DmgBoy {
             bus: bus,
@@ -40,8 +39,19 @@ impl DmgBoy {
     }
 
     fn run(&mut self) {
+        let mut ticks = 100000;
         loop {
             self.cpu.borrow_mut().tick();
+            if self.cpu.borrow().is_stopped() {
+                println!("Game was stopped");
+                break;
+            }
+
+            ticks -= 1;
+            if ticks == 0 {
+                println!("Reached the end of timer.");
+                break;
+            }
         }
     }
 }
@@ -68,12 +78,14 @@ fn main() {
         }
     };
 
-    let mut bugboy = DmgBoy::new();
+    let mut bugboy = DmgBoy::new(rom);
     {
         let mc = bugboy.mc.borrow();
         let addr = RamAddress::new(0x0100);
         println!("Hello, world! {}", mc.read(addr) as char);
     }
 
-    //bugboy.run();
+    bugboy.run();
+
+    println!("Done.");
 }
