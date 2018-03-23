@@ -840,18 +840,18 @@ impl DmgCpu {
             }
             OpCodes::LD_BC_NN => {
                 let pair = self.read_address_pair();
-                self.b = pair.0;
-                self.c = pair.1;
+                self.b = pair.1;
+                self.c = pair.0;
             }
             OpCodes::LD_DE_NN => {
                 let pair = self.read_address_pair();
-                self.d = pair.0;
-                self.e = pair.1;
+                self.d = pair.1;
+                self.e = pair.0;
             }
             OpCodes::LD_HL_NN => {
                 let pair = self.read_address_pair();
-                self.h = pair.0;
-                self.l = pair.1;
+                self.h = pair.1;
+                self.l = pair.0;
             }
             OpCodes::LD_SP_NN => {
                 self.sp = self.make_nn_address();
