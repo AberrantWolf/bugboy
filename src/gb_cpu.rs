@@ -53,7 +53,7 @@ impl DmgCpu {
             h: 0u8,
             l: 0u8,
             sp: RamAddress::new(0xFFFEu16),
-            pc: RamAddress::new(0x0000u16),
+            pc: RamAddress::new(0x0100u16),
 
             ime: true,
             halt: false,
@@ -74,7 +74,7 @@ impl DmgCpu {
         self.mc.clone()
     }
 
-    fn read_next_byte(&mut self) -> u8 {
+    fn read_pc_mem_and_increment(&mut self) -> u8 {
         let result = self.mc.borrow().read(self.pc.post_inc(1));
         self.clock += 4;
         self.sync_hardware_bus();
@@ -103,13 +103,13 @@ impl DmgCpu {
     }
 
     fn make_ffn_address(&mut self) -> RamAddress {
-        let n = self.read_next_byte() as u16;
+        let n = self.read_pc_mem_and_increment() as u16;
         RamAddress::new(0xFF00u16 | n)
     }
 
     fn read_address_pair(&mut self) -> (u8, u8) {
-        let low = self.read_next_byte();
-        let high = self.read_next_byte();
+        let low = self.read_pc_mem_and_increment();
+        let high = self.read_pc_mem_and_increment();
         (low, high)
     }
 
@@ -151,7 +151,7 @@ impl DmgCpu {
 
     fn add_no_zcheck(&mut self, a: u8, b: u8) -> u8 {
         let r = a.overflowing_add(b);
-        let hr = (a & 0x0F) + (b & 0x0F);
+        let hr = (a & 0x0F).wrapping_add(b & 0x0F);
 
         self.set_flag_conditional(HALF_CARRY_FLAG, hr > 0x0F);
         self.set_flag_conditional(CARRY_FLAG, r.1); // it wrapped around
@@ -175,7 +175,7 @@ impl DmgCpu {
 
     fn subtract_no_zcheck(&mut self, a: u8, b: u8) -> u8 {
         let r = a.overflowing_sub(b);
-        let hr = (a & 0x0F) - (b & 0x0F);
+        let hr = (a & 0x0F).wrapping_sub(b & 0x0F);
 
         self.set_flag_conditional(HALF_CARRY_FLAG, hr > 0x0F);
         self.set_flag_conditional(CARRY_FLAG, r.1); // it wrapped around
@@ -333,21 +333,28 @@ impl DmgCpu {
         }
     }
 
-    fn push_address_parts(&mut self, high: u8, low: u8) {
-        self.mc.borrow_mut().write(self.sp.dec(1), low);
+    fn push_address_parts(&mut self, high: u8, low: u8) -> Result<(), String> {
+        match self.mc.borrow_mut().write(self.sp.dec(1), low) {
+            Ok(_) => (),
+            Err(err) => return Err(err),
+        }
         self.sync_hardware_bus();
-        self.mc.borrow_mut().write(self.sp.dec(1), high);
+        match self.mc.borrow_mut().write(self.sp.dec(1), high) {
+            Ok(_) => (),
+            Err(err) => return Err(err),
+        }
         self.sync_hardware_bus();
+        Ok(())
     }
 
-    fn push_address_u16(&mut self, addr: u16) {
+    fn push_address_u16(&mut self, addr: u16) -> Result<(), String> {
         let high = (addr & 0xFF00 >> 8) as u8;
         let low = (addr & 0x00FF) as u8;
-        self.push_address_parts(high, low);
+        return self.push_address_parts(high, low);
     }
 
-    fn push_address(&mut self, addr: RamAddress) {
-        self.push_address_u16(addr.get());
+    fn push_address(&mut self, addr: RamAddress) -> Result<(), String> {
+        return self.push_address_u16(addr.get());
     }
 
     fn pop_address_parts(&mut self) -> (u8, u8) {
@@ -363,14 +370,16 @@ impl DmgCpu {
         (parts.0 as u16) << 8 | (parts.1 as u16)
     }
 
-    fn do_call_conditional(&mut self, test: bool) {
+    fn do_call_conditional(&mut self, test: bool) -> Result<(), String> {
         let dest = self.read_pc_as_address();
 
         if test {
             let addr = self.pc.get();
-            self.push_address_u16(addr);
             self.pc.set(dest);
+            return self.push_address_u16(addr);
         }
+
+        Ok(())
     }
 
     fn do_return_conditional(&mut self, test: bool) {
@@ -394,7 +403,7 @@ impl DmgCpu {
         }
     }
 
-    fn decode_and_execute_cb_op(&mut self, sop: u8) {
+    fn decode_and_execute_cb_op(&mut self, sop: u8) -> Result<(), String> {
         let op_type: SecondOpType = SecondOpType::from_u8(sop);
         let action = SecondOpAction::from_u8(sop);
         let register = SecondOpRegister::from_u8(sop);
@@ -431,7 +440,10 @@ impl DmgCpu {
                     let hl = self.make_hl_address();
                     let val = self.mc.borrow_mut().read(hl);
                     self.sync_hardware_bus();
-                    self.mc.borrow_mut().write(hl, val | bit_mask);
+                    match self.mc.borrow_mut().write(hl, val | bit_mask) {
+                        Ok(_) => (),
+                        Err(err) => return Err(err),
+                    }
                     self.sync_hardware_bus();
                 }
             },
@@ -447,7 +459,10 @@ impl DmgCpu {
                     let mut mc = self.mc.borrow_mut();
                     let hl = self.make_hl_address();
                     let val = mc.read(hl);
-                    mc.write(hl, val & !bit_mask);
+                    match mc.write(hl, val & !bit_mask) {
+                        Ok(_) => (),
+                        Err(err) => return Err(err),
+                    }
                 }
             },
             SecondOpType::ROTATE_SHIFT => match register {
@@ -465,11 +480,16 @@ impl DmgCpu {
                     let hl = self.make_hl_address();
                     let val = self.mc.borrow_mut().read(hl);
                     self.sync_hardware_bus();
-                    self.mc.borrow_mut().write(hl, val & !bit_mask);
+                    match self.mc.borrow_mut().write(hl, val & !bit_mask) {
+                        Ok(_) => (),
+                        Err(err) => return Err(err),
+                    }
                     self.sync_hardware_bus();
                 }
             },
         }
+
+        Ok(())
     }
 
     fn is_flag_set(&self, flag: u8) -> bool {
@@ -510,30 +530,36 @@ impl DmgCpu {
         self.stop
     }
 
-    pub fn tick(&mut self) {
+    pub fn tick(&mut self) -> Result<(), String> {
         if self.stop {
-            return;
+            return Ok(());
         }
 
-        let op_val = self.read_next_byte();
-        self.do_op(op_val);
+        let op_val = self.read_pc_mem_and_increment();
+        return self.do_op(op_val);
     }
 
-    pub fn do_op(&mut self, op_val: u8) {
+    pub fn do_op(&mut self, op_val: u8) -> Result<(), String> {
         let op = match OpCodes::from_u8(op_val) {
             Some(op) => op,
             None => {
-                println!("Unrecognized opcode value: {}!!!", op_val);
-                return;
+                let err = format!("Unrecognized opcode value: {}!!!", op_val);
+                return Err(err);
             }
         };
 
-        println!("Doing op: {:?} @ {:X}", op, self.pc.get());
+        // should be safe to subtract 1 because we just incremented?
         println!(
-            "Reg A:{:X} B:{:X} C:{:X} D:{:X} E:{:X} F:{:X} H:{:X} L:{:X}",
+            "    A:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} F:{:02X} H:{:02X} L:{:02X}",
             self.a, self.b, self.c, self.d, self.e, self.f, self.h, self.l
         );
+        println!(
+            "{:<10} ({:#06X})",
+            format!("{:?}", op),
+            self.pc.get().wrapping_sub(1)
+        );
 
+        let mut result: Result<(), String> = Ok(());
         match op {
             OpCodes::LD_A_A => {
                 // do nothing since it's copying to itself
@@ -683,25 +709,25 @@ impl DmgCpu {
                 // pass
             }
             OpCodes::LD_A_N => {
-                self.a = self.read_next_byte();
+                self.a = self.read_pc_mem_and_increment();
             }
             OpCodes::LD_B_N => {
-                self.b = self.read_next_byte();
+                self.b = self.read_pc_mem_and_increment();
             }
             OpCodes::LD_C_N => {
-                self.c = self.read_next_byte();
+                self.c = self.read_pc_mem_and_increment();
             }
             OpCodes::LD_D_N => {
-                self.d = self.read_next_byte();
+                self.d = self.read_pc_mem_and_increment();
             }
             OpCodes::LD_E_N => {
-                self.e = self.read_next_byte();
+                self.e = self.read_pc_mem_and_increment();
             }
             OpCodes::LD_H_N => {
-                self.h = self.read_next_byte();
+                self.h = self.read_pc_mem_and_increment();
             }
             OpCodes::LD_L_N => {
-                self.l = self.read_next_byte();
+                self.l = self.read_pc_mem_and_increment();
             }
             OpCodes::LD_A_mHL => {
                 let addr = self.make_hl_address();
@@ -734,42 +760,42 @@ impl DmgCpu {
             OpCodes::LD_mHL_A => {
                 let addr = self.make_hl_address();
                 let val = self.a;
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::LD_mHL_B => {
                 let addr = self.make_hl_address();
                 let val = self.b;
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::LD_mHL_C => {
                 let addr = self.make_hl_address();
                 let val = self.c;
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::LD_mHL_D => {
                 let addr = self.make_hl_address();
                 let val = self.d;
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::LD_mHL_E => {
                 let addr = self.make_hl_address();
                 let val = self.e;
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::LD_mHL_H => {
                 let addr = self.make_hl_address();
                 let val = self.h;
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::LD_mHL_L => {
                 let addr = self.make_hl_address();
                 let val = self.l;
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::LD_mHL_N => {
                 let addr = self.make_hl_address();
-                let val = self.read_next_byte();
-                self.mc.borrow_mut().write(addr, val);
+                let val = self.read_pc_mem_and_increment();
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::LD_A_mBC => {
                 let addr = self.make_bc_address();
@@ -786,7 +812,7 @@ impl DmgCpu {
             OpCodes::LD_mC_A => {
                 let addr = self.make_ffc_address();
                 let a = self.a;
-                self.mc.borrow_mut().write(addr, a);
+                result = self.mc.borrow_mut().write(addr, a);
             }
             OpCodes::LD_A_mN => {
                 let addr = self.make_ffn_address();
@@ -795,7 +821,7 @@ impl DmgCpu {
             OpCodes::LD_mN_A => {
                 let addr = self.make_ffn_address();
                 let a = self.a;
-                self.mc.borrow_mut().write(addr, a);
+                result = self.mc.borrow_mut().write(addr, a);
             }
             OpCodes::LD_A_mNN => {
                 let addr = self.make_nn_address();
@@ -804,7 +830,7 @@ impl DmgCpu {
             OpCodes::LD_mNN_A => {
                 let addr = self.make_nn_address();
                 let a = self.a;
-                self.mc.borrow_mut().write(addr, a);
+                result = self.mc.borrow_mut().write(addr, a);
             }
             OpCodes::LD_A_HLI => {
                 let addr = self.make_hl_address();
@@ -819,24 +845,24 @@ impl DmgCpu {
             OpCodes::LD_mBC_A => {
                 let addr = self.make_bc_address();
                 let a = self.a;
-                self.mc.borrow_mut().write(addr, a);
+                result = self.mc.borrow_mut().write(addr, a);
             }
             OpCodes::LD_mDE_A => {
                 let addr = self.make_de_address();
                 let a = self.a;
-                self.mc.borrow_mut().write(addr, a);
+                result = self.mc.borrow_mut().write(addr, a);
             }
             OpCodes::LD_HLI_A => {
                 let addr = self.make_hl_address();
                 let a = self.a;
-                self.mc.borrow_mut().write(addr, a);
                 increment_16(&mut self.h, &mut self.l);
+                result = self.mc.borrow_mut().write(addr, a);
             }
             OpCodes::LD_HLD_A => {
                 let addr = self.make_hl_address();
                 let a = self.a;
-                self.mc.borrow_mut().write(addr, a);
                 decrement_16(&mut self.h, &mut self.l);
+                result = self.mc.borrow_mut().write(addr, a);
             }
             OpCodes::LD_BC_NN => {
                 let pair = self.read_address_pair();
@@ -862,22 +888,22 @@ impl DmgCpu {
             OpCodes::PUSH_BC => {
                 let b = self.b;
                 let c = self.c;
-                self.push_address_parts(b, c);
+                result = self.push_address_parts(b, c);
             }
             OpCodes::PUSH_DE => {
                 let d = self.d;
                 let e = self.e;
-                self.push_address_parts(d, e);
+                result = self.push_address_parts(d, e);
             }
             OpCodes::PUSH_HL => {
                 let h = self.h;
                 let l = self.l;
-                self.push_address_parts(h, l);
+                result = self.push_address_parts(h, l);
             }
             OpCodes::PUSH_AF => {
                 let a = self.a;
                 let f = self.f;
-                self.push_address_parts(a, f);
+                result = self.push_address_parts(a, f);
             }
             OpCodes::POP_BC => {
                 let parts = self.pop_address_parts();
@@ -900,7 +926,7 @@ impl DmgCpu {
                 self.c = parts.1;
             }
             OpCodes::LDHL_SP_e => {
-                let b = self.read_next_byte();
+                let b = self.read_pc_mem_and_increment();
                 let sp = self.sp.get();
                 let temp = self.add_to_u16(b, sp);
                 self.h = ((temp & 0xFF00) >> 8) as u8;
@@ -909,10 +935,14 @@ impl DmgCpu {
             OpCodes::LD_mNN_SP => {
                 let mut addr = self.make_nn_address();
                 let sp = self.sp.get();
-                self.mc
+                result = self.mc
                     .borrow_mut()
                     .write(addr.post_inc(1), (sp & 0x00ff) as u8);
-                self.mc.borrow_mut().write(addr, ((sp & 0xff00) >> 8) as u8);
+                match result {
+                    Ok(_) => (),
+                    r @ Err(_) => return r,
+                }
+                result = self.mc.borrow_mut().write(addr, ((sp & 0xff00) >> 8) as u8);
             }
             OpCodes::ADD_A_A => {
                 let val = self.a;
@@ -950,7 +980,7 @@ impl DmgCpu {
                 self.a = self.add(a, val);
             }
             OpCodes::ADD_A_N => {
-                let val = self.read_next_byte();
+                let val = self.read_pc_mem_and_increment();
                 let a = self.a;
                 self.a = self.add(a, val);
             }
@@ -996,7 +1026,7 @@ impl DmgCpu {
                 self.a = self.add_with_carry(a, val);
             }
             OpCodes::ADC_A_N => {
-                let val = self.read_next_byte();
+                let val = self.read_pc_mem_and_increment();
                 let a = self.a;
                 self.a = self.add_with_carry(a, val);
             }
@@ -1042,7 +1072,7 @@ impl DmgCpu {
                 self.a = self.subtract(a, val);
             }
             OpCodes::SUB_N => {
-                let val = self.read_next_byte();
+                let val = self.read_pc_mem_and_increment();
                 let a = self.a;
                 self.a = self.subtract(a, val);
             }
@@ -1088,7 +1118,7 @@ impl DmgCpu {
                 self.a = self.subtract_with_carry(a, val);
             }
             OpCodes::SBC_A_N => {
-                let val = self.read_next_byte();
+                let val = self.read_pc_mem_and_increment();
                 let a = self.a;
                 self.a = self.subtract_with_carry(a, val);
             }
@@ -1134,7 +1164,7 @@ impl DmgCpu {
                 self.set_logic_flags(a, true);
             }
             OpCodes::AND_N => {
-                self.a = self.a & self.read_next_byte();
+                self.a = self.a & self.read_pc_mem_and_increment();
                 let a = self.a;
                 self.set_logic_flags(a, true);
             }
@@ -1181,7 +1211,7 @@ impl DmgCpu {
                 self.set_logic_flags(a, false);
             }
             OpCodes::OR_N => {
-                let val = self.read_next_byte();
+                let val = self.read_pc_mem_and_increment();
                 self.a = self.a | val;
                 let a = self.a;
                 self.set_logic_flags(a, false);
@@ -1229,7 +1259,7 @@ impl DmgCpu {
                 self.set_logic_flags(a, false);
             }
             OpCodes::XOR_N => {
-                let val = self.read_next_byte();
+                let val = self.read_pc_mem_and_increment();
                 self.a ^= val;
                 let a = self.a;
                 self.set_logic_flags(a, false);
@@ -1277,7 +1307,7 @@ impl DmgCpu {
                 self.subtract_with_carry(a, val);
             }
             OpCodes::CP_N => {
-                let val = self.read_next_byte();
+                let val = self.read_pc_mem_and_increment();
                 let a = self.a;
                 self.subtract_with_carry(a, val);
             }
@@ -1326,7 +1356,7 @@ impl DmgCpu {
                 let addr = self.make_hl_address();
                 let mut val = self.mc.borrow().read(addr);
                 self.increment(&mut val);
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::DEC_A => {
                 let mut val = self.a;
@@ -1367,7 +1397,7 @@ impl DmgCpu {
                 let addr = self.make_hl_address();
                 let mut val = self.mc.borrow().read(addr);
                 self.decrement(&mut val);
-                self.mc.borrow_mut().write(addr, val);
+                result = self.mc.borrow_mut().write(addr, val);
             }
             OpCodes::ADD_HL_BC => {
                 let h = self.h;
@@ -1400,7 +1430,7 @@ impl DmgCpu {
                 self.h = self.add(h, ((sp_val & 0xFF00) >> 8) as u8 + carry);
             }
             OpCodes::ADD_SP_e => {
-                let val = self.read_next_byte() as u16;
+                let val = self.read_pc_mem_and_increment() as u16;
                 self.sp.inc(val);
             }
             OpCodes::INC_BC => {
@@ -1445,8 +1475,8 @@ impl DmgCpu {
             }
             OpCodes::MULTI_BYTE_OP => {
                 // this code accounts for many variants based on the second byte read
-                let next_op = self.read_next_byte();
-                self.decode_and_execute_cb_op(next_op);
+                let next_op = self.read_pc_mem_and_increment();
+                result = self.decode_and_execute_cb_op(next_op);
             }
             OpCodes::JP_NN => {
                 self.do_jump_conditional(true);
@@ -1491,23 +1521,23 @@ impl DmgCpu {
                 self.pc = self.make_hl_address();
             }
             OpCodes::CALL_NN => {
-                self.do_call_conditional(true);
+                result = self.do_call_conditional(true);
             }
             OpCodes::CALL_NZ_NN => {
                 let f = self.f;
-                self.do_call_conditional((f & ZERO_FLAG) == 0);
+                result = self.do_call_conditional((f & ZERO_FLAG) == 0);
             }
             OpCodes::CALL_Z_NN => {
                 let f = self.f;
-                self.do_call_conditional((f & ZERO_FLAG) == ZERO_FLAG);
+                result = self.do_call_conditional((f & ZERO_FLAG) == ZERO_FLAG);
             }
             OpCodes::CALL_NC_NN => {
                 let f = self.f;
-                self.do_call_conditional((f & CARRY_FLAG) == 0);
+                result = self.do_call_conditional((f & CARRY_FLAG) == 0);
             }
             OpCodes::CALL_C_NN => {
                 let f = self.f;
-                self.do_call_conditional((f & CARRY_FLAG) == CARRY_FLAG);
+                result = self.do_call_conditional((f & CARRY_FLAG) == CARRY_FLAG);
             }
             OpCodes::RET => {
                 self.do_return_conditional(true);
@@ -1534,42 +1564,42 @@ impl DmgCpu {
             }
             OpCodes::RST_0 => {
                 let pc = self.pc;
-                self.push_address(pc);
+                result = self.push_address(pc);
                 self.pc = RamAddress::new(0x0000);
             }
             OpCodes::RST_1 => {
                 let pc = self.pc;
-                self.push_address(pc);
+                result = self.push_address(pc);
                 self.pc = RamAddress::new(0x0008);
             }
             OpCodes::RST_2 => {
                 let pc = self.pc;
-                self.push_address(pc);
+                result = self.push_address(pc);
                 self.pc = RamAddress::new(0x0010);
             }
             OpCodes::RST_3 => {
                 let pc = self.pc;
-                self.push_address(pc);
+                result = self.push_address(pc);
                 self.pc = RamAddress::new(0x0018);
             }
             OpCodes::RST_4 => {
                 let pc = self.pc;
-                self.push_address(pc);
+                result = self.push_address(pc);
                 self.pc = RamAddress::new(0x0020);
             }
             OpCodes::RST_5 => {
                 let pc = self.pc;
-                self.push_address(pc);
+                result = self.push_address(pc);
                 self.pc = RamAddress::new(0x0028);
             }
             OpCodes::RST_6 => {
                 let pc = self.pc;
-                self.push_address(pc);
+                result = self.push_address(pc);
                 self.pc = RamAddress::new(0x0030);
             }
             OpCodes::RST_7 => {
                 let pc = self.pc;
-                self.push_address(pc);
+                result = self.push_address(pc);
                 self.pc = RamAddress::new(0x0038);
             }
             OpCodes::DAA => {
@@ -1585,9 +1615,9 @@ impl DmgCpu {
                 self.halt = true;
             }
             OpCodes::STOP => {
-                self.mc.borrow_mut().write(IE_ADDR, 0);
                 // TODO: set all inputs to self.lOW
                 self.stop = true;
+                result = self.mc.borrow_mut().write(IE_ADDR, 0);
             }
             OpCodes::EI => {
                 self.ime = true;
@@ -1596,5 +1626,7 @@ impl DmgCpu {
                 self.ime = false;
             }
         }
+
+        result
     }
 }

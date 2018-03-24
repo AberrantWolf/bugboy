@@ -30,7 +30,7 @@ pub fn decrement_16(high: &mut u8, low: &mut u8) {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RamAddress {
     val: u16,
 }
@@ -127,7 +127,7 @@ impl MemoryController {
         };
 
         {
-            let mut dest = &mut mc.ram[0x000..0x8000];
+            let dest = &mut mc.ram[0x000..0x8000];
             mc.rom.copy_current_slice(dest);
         }
 
@@ -141,19 +141,19 @@ impl MemoryController {
     }
 
     // Will panic if addr is outside of the size
-    pub fn write(&mut self, addr: RamAddress, val: u8) {
+    pub fn write(&mut self, addr: RamAddress, val: u8) -> Result<(), String> {
         let idx = addr.get() as usize;
 
         match idx {
             0x0000...0x00FF => {
-                println!("ERROR: trying to write to ROM bank 0: {}", idx);
+                let err = format!("ERROR: trying to write to ROM bank 0: {}", idx);
                 // send this on to the ROM as it may cause a bank switch
-                return;
+                return Err(err);
             }
             0x4000...0x7FFF => {
-                println!("ERROR: trying to write to switchable ROM bank: {}", idx);
+                let err = format!("ERROR: trying to write to switchable ROM bank: {}", idx);
                 // MAYBE send this to the ROM as well...?
-                return;
+                return Err(err);
             }
             0x8000...0x9FFF => {
                 // Video RAM...
@@ -175,11 +175,14 @@ impl MemoryController {
             }
             0xFEA0...0xFEFF => {
                 // Unusable Memory
-                println!("ERROR: trying to write to unusable memory: {}", idx);
-                return;
+                let err = format!("ERROR: trying to write to unusable memory: {}", idx);
+                return Err(err);
             }
             0xFF00...0xFF7F => {
                 // I/O ports
+                if addr == SC_ADDR {
+                    println!("Serial: {}", val);
+                }
             }
             0xFF80...0xFFFE => {
                 // High RAM
@@ -193,5 +196,6 @@ impl MemoryController {
         };
 
         self.ram[idx] = val;
+        Ok(())
     }
 }

@@ -12,6 +12,7 @@ mod gb_rom;
 
 use std::cell::RefCell;
 use std::env;
+use std::io;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -39,9 +40,18 @@ impl DmgBoy {
     }
 
     fn run(&mut self) {
-        let mut ticks = 100000;
+        let mut ticks = 100_000;
+        let mut buffer = String::new();
+        let stdin = io::stdin();
         loop {
-            self.cpu.borrow_mut().tick();
+            match self.cpu.borrow_mut().tick() {
+                Ok(_) => (),
+                Err(e) => {
+                    println!("ERROR: {}", e);
+                    break;
+                }
+            }
+
             if self.cpu.borrow().is_stopped() {
                 println!("Game was stopped");
                 break;
@@ -52,6 +62,14 @@ impl DmgBoy {
                 println!("Reached the end of timer.");
                 break;
             }
+
+            // match stdin.read_line(&mut buffer) {
+            //     Ok(_) => continue,
+            //     Err(e) => {
+            //         println!("Error reading stdin: {}", e);
+            //         return;
+            //     }
+            // }
         }
     }
 }
