@@ -3,6 +3,15 @@ name = "bugboy"
 version = "0.1.0"
 authors = ["Scott Harper <orcein@gmil.com>"]
 
+[[bin]]
+name = "bugboy"
+path = "src/bugboy.rs"
+
+[[bin]]
+name = "traceboy"
+path = "src/traceboy.rs"
+
 [dependencies]
 enum_primitive = "*"
 num = "0.1"
+serde_json = "1.0"

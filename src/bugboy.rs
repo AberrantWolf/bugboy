@@ -77,6 +77,11 @@ impl DmgBoy {
 fn main() {
     let args: Vec<String> = env::args().collect();
 
+    if args.len() < 2 {
+        println!("Too few arguments specified.");
+        return;
+    }
+
     let path = Path::new(&args[1]);
 
     let mut absolute_path = match env::current_dir() {
