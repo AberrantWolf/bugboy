@@ -7,6 +7,8 @@ use gb_hw_bus::HardwareBus;
 use gb_mem::{MemoryController, RamAddress, decrement_16, increment_16, IE_ADDR};
 use gb_opcodes::{OpCodes, SecondOpAction, SecondOpRegister, SecondOpType};
 
+use tracelog::{MemChange, TraceLog};
+
 const ZERO_FLAG: u8 = 1 << 7;
 const SUBT_FLAG: u8 = 1 << 6;
 const HALF_CARRY_FLAG: u8 = 1 << 5;
@@ -530,16 +532,16 @@ impl DmgCpu {
         self.stop
     }
 
-    pub fn tick(&mut self) -> Result<(), String> {
+    pub fn tick(&mut self, log: &mut Vec<TraceLog>) -> Result<(), String> {
         if self.stop {
             return Ok(());
         }
 
         let op_val = self.read_pc_mem_and_increment();
-        return self.do_op(op_val);
+        return self.do_op(op_val, log);
     }
 
-    pub fn do_op(&mut self, op_val: u8) -> Result<(), String> {
+    pub fn do_op(&mut self, op_val: u8, log: &mut Vec<TraceLog>) -> Result<(), String> {
         let op = match OpCodes::from_u8(op_val) {
             Some(op) => op,
             None => {
@@ -547,6 +549,8 @@ impl DmgCpu {
                 return Err(err);
             }
         };
+
+        let mut log_item = TraceLog::new(op);
 
         // should be safe to subtract 1 because we just incremented?
         println!(
@@ -1626,6 +1630,8 @@ impl DmgCpu {
                 self.ime = false;
             }
         }
+
+        log.push(log_item);
 
         result
     }

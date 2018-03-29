@@ -9,6 +9,7 @@ mod gb_mem;
 mod gb_opcodes;
 mod gb_hw_bus;
 mod gb_rom;
+mod tracelog;
 
 use std::cell::RefCell;
 use std::env;
@@ -20,6 +21,8 @@ use gb_cpu::DmgCpu;
 use gb_hw_bus::HardwareBus;
 use gb_mem::{MemoryController, RamAddress};
 use gb_rom::GbRom;
+
+use tracelog::TraceLog;
 
 struct DmgBoy {
     cpu: Rc<RefCell<DmgCpu>>,
@@ -40,11 +43,12 @@ impl DmgBoy {
     }
 
     fn run(&mut self) {
-        let mut ticks = 100_000;
-        let mut buffer = String::new();
-        let stdin = io::stdin();
+        let mut max_ticks = 100_000;
+        //let mut buffer = String::new();
+        //let stdin = io::stdin();
+        let mut log: Vec<TraceLog> = Vec::new();
         loop {
-            match self.cpu.borrow_mut().tick() {
+            match self.cpu.borrow_mut().tick(&mut log) {
                 Ok(_) => (),
                 Err(e) => {
                     println!("ERROR: {}", e);
@@ -57,8 +61,8 @@ impl DmgBoy {
                 break;
             }
 
-            ticks -= 1;
-            if ticks == 0 {
+            max_ticks -= 1;
+            if max_ticks == 0 {
                 println!("Reached the end of timer.");
                 break;
             }

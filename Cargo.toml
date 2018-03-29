@@ -3,6 +3,10 @@ name = "bugboy"
 version = "0.1.0"
 authors = ["Scott Harper <orcein@gmil.com>"]
 
+[features]
+default = []
+run_trace = []
+
 [[bin]]
 name = "bugboy"
 path = "src/bugboy.rs"

@@ -23,3 +23,12 @@ pub struct TraceLog {
     opcode: OpCodes,
     changes: Vec<MemChange>,
 }
+
+impl TraceLog {
+    pub fn new(op: OpCodes) -> Self {
+        TraceLog {
+            opcode: op,
+            changes: Vec::new(),
+        }
+    }
+}
